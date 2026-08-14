@@ -1,0 +1,47 @@
+# The repo root sits directly on top of the data tree (4.2 TB on the cluster), so this file
+# is load-bearing: `git add -A` with data/ untracked would try to stage the whole allocation.
+# Git does not descend into an ignored directory, so the top-level data/ rule is enough.
+
+# ── controlled-access data — never in git ────────────────────────────────────
+# AMP-AD (Synapse) and AMP-PD (GCP) both require their own DUA. A collaborator fetches
+# these themselves; the commands are recorded at the top of clinical_core.py.
+data/
+
+# Same DUA, same rule, for the demo_sample_check side-quest: the pulled pseudobulk sample
+# lists carry individual-level age/sex/disease/PMI, the psam carries 8,607 AMP-PD IDs, and
+# out/ carries donor IDs joined to phenotype. Its scripts/ and README.md ARE tracked — they
+# are what makes the rest reproducible, and they contain no sample data.
+demo_sample_check/pseudobulk/
+demo_sample_check/ad-pd-gwas-demo/
+demo_sample_check/out/
+
+# ── outputs, all regenerable from code + data ────────────────────────────────
+clinical_core_out/
+results/
+logs/
+*.log
+slurm-*.out
+
+# ── environment and secrets ──────────────────────────────────────────────────
+.venv/
+.venv_backup*/
+.env
+
+# ── large binaries: liftOver + its chain file (~20 MB), installed per-machine ─
+bin/
+
+# ── prior versions, kept on disk for provenance but not carried in the repo ──
+scripts_archive/
+
+# ── python / jupyter / macOS ─────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.DS_Store
+
+# NOT ignored, deliberately:
+#   ref/          refFlat.txt (21 MB) + highld_exclude_hg38.bed — small, public, and the
+#                 single source of locus coordinates. Versioning it means a fresh clone can
+#                 run gene_annot.py with no setup. The large, non-redistributable reference
+#                 (fasta, ancestry panel) lives in data/ref/ and is ignored with the rest.
