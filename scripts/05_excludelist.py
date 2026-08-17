@@ -28,8 +28,8 @@ Logic:
      union is callrate ∪ sex ∪ het ONLY — no double-pruning.        -> reason 'genotools_qc_fail:<step>'
      WHY the JSON manifest and not `pruned_samples`: probing showed `pruned_samples` is incomplete
      (never lists callrate fails; absent entirely for WB-DWGS). `<ANC>_pass_fail` is uniform across all
-     3 callsets and its input/output stems give the authoritative fileset paths (no globbing).
-     Pass the 3 callset JSONs via --genotools-json (repeatable; defaults below). QC-fail IIDs are
+     4 callsets and its input/output stems give the authoritative fileset paths (no globbing).
+     Pass the 4 callset JSONs via --genotools-json (repeatable; defaults below). QC-fail IIDs are
      matched to the common-set sample list by IID (genotools .fam IIDs == cohort_merged IIDs — same
      filtered source). (--qc-fail also accepts a pre-assembled flat id file, unioned as
      'genotools_qc_fail'.)
@@ -76,7 +76,7 @@ def parse_args():
                     help="FID<TAB>IID<TAB>ancestry for every common-set sample")
     ap.add_argument("--genotools-json", action="append", default=None,
                     help="per-callset genotools FILTERED.<dataset>.json (repeatable). "
-                         "Defaults to the 3 callset JSONs. Use --no-genotools to skip.")
+                         "Defaults to the 4 callset JSONs. Use --no-genotools to skip.")
     ap.add_argument("--no-genotools", action="store_true",
                     help="skip genotools QC-fail assembly entirely")
     ap.add_argument("--qc-fail", default=None,

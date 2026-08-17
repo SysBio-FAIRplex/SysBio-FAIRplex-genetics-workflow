@@ -6,104 +6,61 @@
 #SBATCH --mem=1500G
 #SBATCH --partition=largemem
 #
-# STEP 3 — plink1.9 union merge of the three normalized bed filesets into one cohort.
+# STEP 3 — plink1.9 union merge of the normalized bed filesets into one cohort.
 #
 # plink1.9 rather than plink2 because the non-concatenating --pmerge-list is unimplemented
 # in this plink2 build. --allow-extra-chr covers the PAR codes plink1.9 does not recognize.
 #
+# To add a callset: add its NORM_* stem to SECONDARY. Nothing else changes.
+#
 #   ./submit.sh scripts/03_merge.sh
 
-set -o pipefail
+set -o pipefail          # NOT set -e — pass 1 is allowed to fail; that is the retry trigger.
 
-# Resolve the bundle root and load the one file that knows where anything lives.
 BUNDLE="${BUNDLE:-${SLURM_SUBMIT_DIR:-$PWD}}"
 source "${BUNDLE}/config.sh"
+: "${NORM_WGS:?config.sh failed to load}"
 
 module load "${MOD_PLINK1}"
 
-# The three NORM_* bed stems come from config.sh.
-OUT_DIR="${MERGED_DIR}"
-MERGE_LIST="${OUT_DIR}/merge_list.txt"
-OUT="${OUT_DIR}/cohort_merged"
-TMP="${OUT_DIR}/tmp_merge"
+PRIMARY="${NORM_WGS}"
+SECONDARY=("${NORM_WB}" "${NORM_DC}" "${NORM_BR}")
 
-mkdir -p "${OUT_DIR}" "${TMP}"
+OUT="${MERGED_DIR}/cohort_merged"
+TMP="${MERGED_DIR}/tmp_merge"
+MERGE_LIST="${MERGED_DIR}/merge_list.txt"
+mkdir -p "${MERGED_DIR}" "${TMP}"
 
-echo "=========================================="
-echo "Cohort merge — union bed"
-echo "Job ID:     ${SLURM_JOB_ID}"
-echo "Node:       ${SLURMD_NODENAME}"
-echo "Start time: $(date)"
-echo "=========================================="
+# plink1.9 sizes threads and memory from the NODE, not the allocation. 90% of the request
+# leaves headroom for everything outside plink's own workspace.
+OPTS=(--make-bed --allow-no-sex --allow-extra-chr --threads "${SLURM_CPUS_PER_TASK:-4}")
+[[ -n "${SLURM_MEM_PER_NODE:-}" ]] && OPTS+=(--memory $(( SLURM_MEM_PER_NODE * 9 / 10 )))
 
-# Build merge list (secondary filesets) — the step 2 NORMALIZED beds:
-# chr-prefixed codes + reference-oriented REF/ALT + uniform chr:pos:REF:ALT IDs.
-cat > "${MERGE_LIST}" << MERGEEOF
-${NORM_WB}
-${NORM_DC}
-MERGEEOF
+echo "cohort merge — job ${SLURM_JOB_ID} on ${SLURMD_NODENAME} — $(date)"
+echo "  primary:   ${PRIMARY}"
+printf '  secondary: %s\n' "${SECONDARY[@]}"
+printf '%s\n' "${SECONDARY[@]}" > "${MERGE_LIST}"
 
-echo "Primary:   ${NORM_WGS}"
-echo "Secondary: ${NORM_WB}, ${NORM_DC}"
-echo "Mode:      union"
+plink --bfile "${PRIMARY}" --merge-list "${MERGE_LIST}" "${OPTS[@]}" --out "${TMP}/merged"
+RC=$?
 
-# ── Pass 1: attempt merge, catch strand flip conflicts ────────────────────────
-echo "Pass 1: initial merge attempt..."
-plink \
-    --bfile "${NORM_WGS}" \
-    --merge-list "${MERGE_LIST}" \
-    --make-bed \
-    --allow-no-sex \
-    --allow-extra-chr \
-    --out "${TMP}/pass1"
-
-PASS1_EXIT=$?
-
-# ── Pass 2: flip mismatching SNPs and retry if needed ────────────────────────
-if [[ ${PASS1_EXIT} -ne 0 ]] && [[ -f "${TMP}/pass1-merge.missnp" ]]; then
-    echo "Pass 1 found strand conflicts — flipping and retrying..."
-    MISSNP="${TMP}/pass1-merge.missnp"
-    NSNPS=$(wc -l < "${MISSNP}")
-    echo "Flipping ${NSNPS} SNPs in ${NORM_WGS}..."
-
-    plink \
-        --bfile "${NORM_WGS}" \
-        --flip "${MISSNP}" \
-        --make-bed \
-        --allow-no-sex \
-        --allow-extra-chr \
-        --out "${TMP}/wgs_harm_flipped"
-
-    echo "Pass 2: re-attempting merge with flipped SNPs..."
-    plink \
-        --bfile "${TMP}/wgs_harm_flipped" \
-        --merge-list "${MERGE_LIST}" \
-        --make-bed \
-        --allow-no-sex \
-        --allow-extra-chr \
-        --out "${OUT}"
-
-    FINAL_EXIT=$?
-else
-    FINAL_EXIT=${PASS1_EXIT}
-    if [[ ${FINAL_EXIT} -eq 0 ]]; then
-        mv "${TMP}/pass1.bed" "${OUT}.bed"
-        mv "${TMP}/pass1.bim" "${OUT}.bim"
-        mv "${TMP}/pass1.fam" "${OUT}.fam"
-        mv "${TMP}/pass1.log" "${OUT}.log"
-    fi
+# Retry once with the conflicting SNPs strand-flipped in the primary. Since step 2 encodes
+# REF/ALT in every variant ID, a shared ID cannot carry mismatched alleles — so this should
+# no longer be reachable. Kept as a cheap net.
+if [[ ${RC} -ne 0 && -f "${TMP}/merged-merge.missnp" ]]; then
+    echo "pass 1: $(wc -l < "${TMP}/merged-merge.missnp") allele conflicts — flipping, retrying..."
+    plink --bfile "${PRIMARY}" --flip "${TMP}/merged-merge.missnp" \
+          "${OPTS[@]}" --out "${TMP}/primary_flipped"
+    plink --bfile "${TMP}/primary_flipped" --merge-list "${MERGE_LIST}" \
+          "${OPTS[@]}" --out "${TMP}/merged"
+    RC=$?
 fi
 
-echo "=========================================="
-echo "End time: $(date)"
+[[ ${RC} -eq 0 ]] || { echo "ERROR: merge failed (exit ${RC})" >&2; exit ${RC}; }
 
-if [[ ${FINAL_EXIT} -eq 0 ]]; then
-    echo "Success."
-    echo "Variants: $(wc -l < ${OUT}.bim)"
-    echo "Samples:  $(wc -l < ${OUT}.fam)"
-    du -sh "${OUT}.bed"
-else
-    echo "ERROR: merge failed with exit code ${FINAL_EXIT}" >&2
-fi
+# Staged in TMP throughout, so a failed re-run never destroys a good cohort_merged.
+for ext in bed bim fam log; do mv "${TMP}/merged.${ext}" "${OUT}.${ext}"; done
 
-exit ${FINAL_EXIT}
+echo "done — $(date)"
+echo "  variants: $(wc -l < "${OUT}.bim")"
+echo "  samples:  $(wc -l < "${OUT}.fam")"

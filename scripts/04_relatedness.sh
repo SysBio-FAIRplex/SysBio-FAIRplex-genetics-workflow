@@ -10,10 +10,10 @@
 # ancestry. Runs after step 3. Report-only: it decides nothing, step 5 adjudicates.
 #
 # Approach:
-#   1. Build the common-variant set on the full merged cohort (--geno 0.05 on the union =
+#   1. Build the common-variant set on the full merged cohort (COMMON_GENO on the union =
 #      variants genotyped across all callsets -> same call-rate denominator for every sample,
-#      so cross-dataset KING is fair).
-#   2. Reuse the per-callset genotools ancestry labels (SAME GP2 panel across all 3, so directly
+#      so cross-dataset KING is fair). The threshold is load-bearing — see COMMON_GENO below.
+#   2. Reuse the per-callset genotools ancestry labels (SAME GP2 panel across all 4, so directly
 #      comparable). Union them, restrict to the common set. NO re-derivation on the merge.
 #   3. Split the common set by ancestry (--keep per stratum) and run genotools --related
 #      REPORT-ONLY within each stratum (no --ancestry: each subset is already homogeneous).
@@ -43,8 +43,13 @@ OUT_DIR="${MERGED_DIR}/relatedness"
 COMMON="${OUT_DIR}/cohort_common"
 SPLIT_DIR="${OUT_DIR}/by_ancestry"
 
-# LBL_WGS / LBL_WB / LBL_DC (the per-callset genotools ancestry predictions, FID<TAB>IID<TAB>label,
-# all projected against the same GP2 panel) come from config.sh.
+# The per-callset genotools ancestry predictions (FID<TAB>IID<TAB>label, all projected against
+# the same GP2 panel) come from config.sh. ONE list, used both for the input check and for the
+# union below — a callset missing from either place produces samples with no label, which are
+# then dropped from every stratum silently.
+LABEL_FILES=("${LBL_WGS}" "${LBL_WB}" "${LBL_DC}" "${LBL_BR}")
+
+THREADS="${SLURM_CPUS_PER_TASK:-32}"
 
 MERGED_LABELS="${OUT_DIR}/merged_ancestry_labels.txt"   # FID IID label, deduped
 COMMON_LABELS="${OUT_DIR}/common_ancestry_labels.txt"    # restricted to the common set
@@ -64,17 +69,33 @@ echo "Merged in:  ${MERGED}"
 echo "Start time: $(date)"
 echo "=========================================="
 
-for f in "${MERGED}.bed" "${LBL_WGS}" "${LBL_WB}" "${LBL_DC}"; do
+for f in "${MERGED}.bed" "${LABEL_FILES[@]}"; do
     [[ -f "$f" ]] || { echo "ERROR: missing input: $f" >&2; exit 1; }
 done
 
 # ── Step 1: common-variant subset (fair cross-dataset denominator) ────────────
+# COMMON_GENO must sit BELOW the smallest callset's share of the cohort. Above that line, the
+# variants a callset lacks stay in the set, and every one of its samples reads as heavily
+# missing — which is then consumed as a QUALITY signal by KING and by step 5's duplicate
+# tie-break, when it actually only records which callset the sample came from.
+#
+# MEASURED 2026-08-16: at 0.05, BR-DSNWGS (97 of 13,334 samples = 0.0073) could not move the
+# threshold, so every variant BR lacks was retained and all 97 samples came out at F_MISS
+# 0.5030 against 0.0001 for the other 13,237. That is not a defect in BR — a 97-sample joint
+# call emits nothing at sites monomorphic in its 97 donors, and 49.7% is about what the
+# Watterson expectation gives for 97 vs 13,237 (H(96)/H(13236) ~ 0.51). The defect is using
+# that number as if it measured genotyping quality.
+#
+# 0.005 forces the set to variants present in ALL FOUR callsets — what "common" was meant to
+# mean here. Re-check this bound if a callset smaller than ~0.5% of the cohort is ever added.
+COMMON_GENO=0.005
+
 echo "Step 1: extracting common (cross-callset genotyped) autosomal biallelic SNPs..."
 plink2 \
     --bfile "${MERGED}" \
     --autosome --snps-only --max-alleles 2 \
-    --geno 0.05 \
-    --make-bed --threads 32 \
+    --geno "${COMMON_GENO}" \
+    --make-bed --threads "${THREADS}" \
     --out "${COMMON}"
 [[ $? -eq 0 ]] || { echo "ERROR: common-variant subset failed" >&2; exit 1; }
 NCOMMON=$(wc -l < "${COMMON}.bim")
@@ -84,7 +105,7 @@ echo "Common set: ${NCOMMON} variants, ${NSAMP} samples"
 
 # ── Step 2: fair per-sample call rate (same denominator for all samples) ──────
 echo "Step 2: per-sample missingness on the common set..."
-plink2 --bfile "${COMMON}" --missing --threads 32 --out "${COMMON}"
+plink2 --bfile "${COMMON}" --missing --threads "${THREADS}" --out "${COMMON}"
 [[ $? -eq 0 ]] || { echo "ERROR: --missing failed" >&2; exit 1; }
 echo "Call-rate file: ${COMMON}.smiss"
 
@@ -97,7 +118,7 @@ awk -F'\t' 'FNR>1 {
         if (key in lab) { if (lab[key]!=$3) print "WARN: conflicting label "$1" "$2": "lab[key]" vs "$3 > "/dev/stderr" }
         else lab[key]=$3
      } END { for (k in lab){ split(k,a,SUBSEP); print a[1]"\t"a[2]"\t"lab[k] } }' \
-     "${LBL_WGS}" "${LBL_WB}" "${LBL_DC}" | sort > "${MERGED_LABELS}"
+     "${LABEL_FILES[@]}" | sort > "${MERGED_LABELS}"
 echo "  merged label rows: $(wc -l < "${MERGED_LABELS}")"
 
 # Restrict to samples actually in the common set, keyed FID+IID (robust to FID differences).
@@ -136,7 +157,7 @@ for L in ${LABELS}; do
     # step 6, applied together on the deduplicated grain. KING runs on the global
     # common set — negligible effect at close-kinship thresholds, report-only + human-adjudicated.
     SUB="${SPLIT_DIR}/cohort_common_${L}"
-    plink2 --bfile "${COMMON}" --keep "${KEEP}" --make-bed --threads 32 --out "${SUB}"
+    plink2 --bfile "${COMMON}" --keep "${KEEP}" --make-bed --threads "${THREADS}" --out "${SUB}"
     [[ $? -eq 0 ]] || { echo "    ERROR: subset for ${L} failed" >&2; FAILED="${FAILED} ${L}(subset)"; continue; }
 
     # genotools --related on an already-homogeneous stratum (no --ancestry).

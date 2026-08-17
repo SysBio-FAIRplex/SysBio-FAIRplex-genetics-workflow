@@ -7,7 +7,7 @@
 # hands the bundle root to the job as $BUNDLE so the script can source config.sh.
 #
 #   ./submit.sh scripts/03_merge.sh
-#   ./submit.sh scripts/02b_normalize.sh --job-name=norm_wgs --export=TAG=wgs,...
+#   ./submit.sh scripts/02_normalize.sh --job-name=norm_wgs --export=TAG=wgs,...
 #   ./submit.sh scripts/04_relatedness.sh --dependency=afterok:12345678
 #
 # Anything after the script name is passed through to sbatch verbatim, so an explicit

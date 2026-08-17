@@ -58,19 +58,31 @@ review/plot_gwas.py          # + mask_cohort_artifacts.py
 
 ## Status
 
-Three callsets (`wgs_harm`, `divco_hs`, `wb_dwgs`) are merged and through ancestry QC.
-**BR-DSNWGS is not**, but both blockers are now diagnosed and fixed in the repo:
+**All four callsets are merged.** `cohort_merged` is now 172,497,055 variants × 13,334 samples
+(job 27429821, 2026-08-15). Everything downstream of the merge — relatedness, excludelist,
+per-ancestry QC sets and PCs — was built from the old 3-callset cohort and is stale.
 
 | Step | BR-DSNWGS |
 |---|---|
-| 2 VCF→pgen | done — `br_dsnwgs_hg38.{pgen,psam}` — **but built by notebook cells, not a script** |
+| 0 VCF→pgen | done — `br_dsnwgs_hg38.{pgen,psam}` — **but built by notebook cells, not a script** |
 | 1 genotools filter | done — `br_dsnwgs_hg38_filtered*` |
-| 1 genotools ancestry | ran to completion (job 27211436), output was wrong — **fixed, needs resubmit** |
-| 2 normalize | not started — no `br_dsnwgs_hg38_norm_bed.bed` |
+| 1 genotools ancestry | done 2026-08-14 — 77 EUR / 14 AJ / 3 AMR / 1 CAH / 1 AFR / 1 AAC |
+| 2 normalize | done 2026-08-14 — job 27429119 |
+| 3 merge | done 2026-08-15 — 97/97 samples in, variant arithmetic closes exactly |
+| 4 relatedness | **next** — blocked on `LBL_BR` (see below) |
+
+**`04_relatedness.sh` does not know BR-DSNWGS exists.** Lines 67 and 100 list `LBL_WGS`,
+`LBL_WB` and `LBL_DC` only. Unfixed, the 97 BR samples enter the merged cohort, get no
+ancestry label, drop out of every stratum, and are never tested for relatedness — with no
+error raised. Fix before running step 4.
 
 `FILTERED.br_dsnwgs_ancestry_umap_linearsvc_predicted_labels.txt` is `LBL_BR` in `config.sh` and
-is read by steps 4 and 6. It exists, but every sample in it is `CAH` — the output of the broken
-run. Resubmit step 1 (which now sorts) and confirm the labels show a spread before using it.
+is read by steps 4 and 6. It now holds a real ancestry spread and is usable. (Note the filename
+says `linearsvc` but the model is XGBoost — a GenoTools naming artifact, not a description.)
+
+**`analysis_grain.csv`'s BR-DSNWGS rows are wrong and must be regenerated.** The grain carries
+19 AFR / 67 EUR over 86 rows; the correct run gives 1 AFR / 77 EUR over 97 samples. Not
+reconcilable — regenerate the PCs and labels before step 7.
 
 **Blocker 1 — genotools crashed. FIXED 2026-08-12.** GenoTools sized its GridSearchCV worker
 pool from the *node* (`os.cpu_count()`), not the SLURM allocation, and biowulf's per-user
@@ -124,9 +136,9 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    unaffected. To run the full thing locally:
    `rsync biowulf.nih.gov:$ROOT/data/amp-pd-genomics/WB-DWGS/joint_calls/all_chrs_merged.psam data/amp-pd-genomics/WB-DWGS/joint_calls/`
 
-5. **The cluster's `README.md` (30 KB) has not been merged in.** `scripts/02a_normalize_check.sh`
-   and `06_ancestry_qc.sh` reference its §2 (reference data acquisition) and §3 (per-step commands)
-   by number. Those sections should be folded into this file.
+5. **The cluster's `README.md` (30 KB) has not been merged in.** `06_ancestry_qc.sh` references
+   its §2 (reference data acquisition) and §3 (per-step commands) by number. Those sections
+   should be folded into this file.
 
 6. **DivCo's source VCF is 0 bytes** on the cluster (`merged.deduped.vcf.gz`). The pgen was derived
    before it was truncated, so nothing is blocked, but DivCo cannot be re-derived from source
