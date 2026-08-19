@@ -90,6 +90,24 @@ fi
 # where no PC adjustment can reach it — filtering only the PCA input would leave it in the sumstats.
 # Absent => run unfiltered and say so, rather than failing the grain (same policy as $EXCL above).
 AF_EXCLUDE=${AF_EXCLUDE:-${MERGED_DIR}/exclude_af_concordance.txt}
+
+# PROVENANCE GUARD — added 2026-08-17 after this bit us. The list carries no record of which
+# cohort, threshold or date produced it, and this step applies whatever sits at that path. On
+# 2026-08-17 the first pass over the FOUR-callset merge silently applied a 4,587-variant list
+# built 2026-07-28 from the THREE-callset cohort. Nothing failed; the log line read like a
+# success. It also quietly poisons the rebuild, because af_concordance_build derives the next
+# list from cohort_<ANC>_qc.*, which by then no longer contains the excluded variants — the
+# filter's input would be pre-filtered by its own previous output and would look clean either way.
+#
+# An exclusion list older than the merge it is applied to is always wrong. Refuse rather than warn:
+# a warning is what the previous behaviour effectively was, and it was not read.
+if [[ -f "$AF_EXCLUDE" && "$AF_EXCLUDE" -ot "${MERGED}.bed" ]]; then
+    echo "REFUSING: ${AF_EXCLUDE} predates ${MERGED}.bed, so it was built from a different" >&2
+    echo "  cohort. Move it aside and re-run this step unfiltered, then rebuild it with" >&2
+    echo "  scripts/af_concordance_build.sh against THIS merge." >&2
+    exit 1
+fi
+
 if [[ -f "$AF_EXCLUDE" ]]; then
     AFX_ARG="--exclude $AF_EXCLUDE"
     AFX_NOTE="$(wc -l < "$AF_EXCLUDE") variants from $AF_EXCLUDE"

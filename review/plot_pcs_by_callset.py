@@ -25,21 +25,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Categorical slots 1-3 of the validated palette; all-pairs CVD dE 9.2, normal-vision 24.0.
-# The fused dual-source rows are a 4th value, so they take a neutral + a distinct marker
-# rather than a 4th hue (slot 4 fails the all-pairs floors against slot 2).
+# Categorical slots 1-3 of the validated palette; all-pairs CVD dE 9.2, normal-vision 16.6.
+# A scatter is an ALL-PAIRS form, and only the first three slots clear the all-pairs floors —
+# slot 4 puts yellow beside orange and fails (normal-vision 13.7). So values past the third take
+# the neutral plus a distinct marker: secondary encoding, not a fourth hue.
+#
+# TWO neutrals do not fit either — MEASURED 2026-08-18 against the L 0.43-0.77 band on this
+# surface: #52514e scores normal-vision dE 14.0 against #7a7973 and #5f5e5a scores 9.4 (both
+# below the 15 floor); #adaca6 clears it at 15.6 but drops CVD to 6.1 protan and contrast to
+# 2.22; #b8b7b1 falls outside the band at 0.779. So br_dsnwgs and the fused rows SHARE the
+# neutral and are separated by marker shape alone.
+#
+# That is the better treatment here regardless of palette: the marker branch below also raises
+# size and alpha, which is what makes a 95-sample callset visible against 10,780 EUR samples.
+# A hue would not have.
 COLORS = {
-    "wb_dwgs":            "#2a78d6",   # AMP-PD
+    "wb_dwgs":            "#2a78d6",   # AMP-PD blood
     "wgs_harm":           "#eb6834",   # AMP-AD trio
     "divco_hs":           "#1baf7a",   # Diverse Cohorts
     "divco_hs|wgs_harm":  "#7a7973",   # fused at merge (n~87)
+    "br_dsnwgs":          "#7a7973",   # AMP-PD postmortem (n=95) — neutral + '^'
 }
-MARKERS = {"divco_hs|wgs_harm": "x"}
+MARKERS = {"divco_hs|wgs_harm": "x", "br_dsnwgs": "^"}
 LABELS = {
-    "wb_dwgs": "AMP-PD (wb_dwgs)",
+    "wb_dwgs": "AMP-PD blood (wb_dwgs)",
     "wgs_harm": "AMP-AD trio (wgs_harm)",
     "divco_hs": "Diverse Cohorts (divco_hs)",
     "divco_hs|wgs_harm": "fused (both)",
+    "br_dsnwgs": "AMP-PD postmortem (br_dsnwgs)",
 }
 
 INK = "#0b0b0b"

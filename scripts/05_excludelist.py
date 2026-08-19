@@ -2,14 +2,29 @@
 """STEP 5 — build the cross-dataset exclude list from the ancestry-split KING pairs.
 
 Consumes the report-only relatedness outputs from 04_relatedness.sh and makes the picks ourselves.
-Phenotype reconciliation of the 846 duplicates happens separately, on the phenotype side — this
+Phenotype reconciliation of the duplicates happens separately, on the phenotype side — this
 script is genotype-side only (call-rate-driven).
 
 Logic:
   1. DUPLICATES  (KINSHIP >= --dup-cutoff, default 0.354): union-find the dup pairs into clusters
      (a donor genotyped in >2 callsets forms one cluster); within each cluster KEEP the highest
      common-set call rate, DROP the rest.                         -> reason 'duplicate'
-     (This is where the ~748 Rush<->ROSMAP different-IID dups finally get caught.)
+     This is where cross-callset different-IID dups get caught (Rush<->ROSMAP and, as of the
+     4-callset merge, AMP-AD<->AMP-PD). MEASURED 2026-08-17 on 13,334 merged samples: 302
+     clusters spanning 621 genomes -> 319 drops. The clinical crosswalk independently reports
+     309 donors with >1 genome over 620 genomes, so KING recovers essentially all of them.
+     KING clusters are slightly FEWER and LARGER than the crosswalk predicts (17 clusters of
+     3+ vs 2), i.e. ~7 clusters unify samples the crosswalk treats as distinct donors — MZ
+     twins are indistinguishable from duplicates at 0.354, so this is expected. DECISION
+     2026-08-17: defer to the KING numbers. Genotypic independence is what the GWAS model
+     needs, and one member per cluster is the right call either way.
+     WHERE "~748" AND "846" CAME FROM (settled 2026-08-18): they are clinical_core.py §8's
+     multi-cohort ENROLLMENT counts — 846 donors enrolled in >1 cohort, of which 748 are
+     DivCo<->ROSMAP (DivCo's largest contributor is Rush; ROSMAP is Rush-run). Neither was ever a
+     genotype-duplicate count. Enrollment overlap is a SUPERSET of sequencing overlap: 846/748
+     enrolled twice -> 309 donors actually have >1 genome -> KING finds 302 clusters over 621
+     genomes -> 319 drops. Do not compare this script's output to 748; they count different
+     populations.
   2. RELATIVES   (--rel-cutoff < KINSHIP < --dup-cutoff, default 0.0884..0.354) among still-retained
      samples: greedy maximal-unrelated-set — repeatedly drop the highest-degree node, tie-broken by
      LOWEST call rate (so we keep the better-genotyped sample).   -> reason 'relative_2nd_deg'

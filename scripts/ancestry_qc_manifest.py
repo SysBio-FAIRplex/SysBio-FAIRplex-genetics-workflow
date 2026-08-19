@@ -8,7 +8,7 @@ single artifact the phenotype side consumes (clinical_core.ipynb §12 reads it t
 Sources (all cluster-side, so the manifest is emitted entirely on the genetics track):
   --manifest   data/merged/relatedness/retained_manifest.csv   (FID,IID,ancestry,call_rate,dup_cluster_id)
   --pca-dir    data/merged/by_ancestry_qc/                      (cohort_<ANC>_pca.eigenvec; #FID IID PC1..)
-  --label      the 3 per-callset genotools label files -> source_callset by IID membership
+  --label      the 4 per-callset genotools label files -> source_callset by IID membership
                (FID<TAB>IID<TAB>ancestry_label; an IID appears in exactly its own callset's file)
 
 PCs are blank for samples in strata that had no PCA (the <50-sample strata plink2 refused to LD-prune —
@@ -42,7 +42,7 @@ def parse_args():
     ap.add_argument("--manifest", default=f"{WGS_ROOT}/data/merged/relatedness/retained_manifest.csv")
     ap.add_argument("--pca-dir", default=f"{WGS_ROOT}/data/merged/by_ancestry_qc")
     ap.add_argument("--label", action="append", default=None,
-                    help="name=path (repeatable); defaults to the 3 callset label files")
+                    help="name=path (repeatable); defaults to the 4 callset label files")
     ap.add_argument("--out", default=f"{WGS_ROOT}/data/merged/by_ancestry_qc/retained_samples_manifest.csv")
     ap.add_argument("--npc", type=int, default=10)
     return ap.parse_args()
@@ -77,7 +77,7 @@ def read_labels_source(spec):
 def main():
     a = parse_args()
 
-    # ── source_callset by IID membership across the 3 per-callset label files ──
+    # ── source_callset by IID membership across the 4 per-callset label files ──
     label_specs = a.label if a.label is not None else LABELS_DEFAULT
     source = defaultdict(list)          # IID -> [callset names it appears in]
     for spec in label_specs:
