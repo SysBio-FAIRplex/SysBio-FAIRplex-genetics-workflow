@@ -190,11 +190,19 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    `clinical_core_out/{pheno,covar}/`, but `07_gwas.sh` does not read them — it rebuilds both from
    `$GRAIN` in awk. The awk version is what actually runs. Pick one.
 
-2. **Two implementations of the ctrl-vs-ctrl artifact filter.** `review/mask_cohort_artifacts.py`
-   is here; `08_ctrl_ctrl_filter.{py,sh}` is in `scripts_archive/` on the cluster. The archived one
-   carries the argument that APOE is *expected* to reach significance in the control-vs-control
-   scan (AMP-PD controls are screened for PD, not AD), so subtracting destructively would delete
-   the study's strongest true locus. Read it before trusting the `review/` one.
+2. **Two implementations of the ctrl-vs-ctrl artifact filter — now both in the repo.**
+   `08_ctrl_ctrl_filter.{py,sh}` has been promoted out of the cluster's `scripts_archive/` into
+   `scripts/` and committed. **It is the authoritative one.** It carries the argument that APOE is
+   *expected* to reach significance in the control-vs-control scan — the two control arms are
+   differentially screened, AMP-AD's as cognitively normal and AMP-PD's for PD and not AD — so
+   subtracting destructively would delete the study's strongest true locus. It therefore annotates
+   (`CTRL_P` in `.ccannot.tsv`) and writes `.ccfilt.tsv` separately, never touching the primary.
+   `review/mask_cohort_artifacts.py` is the older post-hoc version and lacks that argument; prefer
+   the `scripts/` one. Still two implementations — pick one.
+
+   This is also the licence boundary against step 6a: **6a may delete variants** because disease is
+   held constant inside each of its cells; **step 8 may not**, because its control definitions
+   differ across programs. Not duplicated reasoning — different entitlements.
 
 3. **Step 6 runs TWICE, with `af_concordance_build.sh` between the passes.** Step 6 reads
    `$MERGED_DIR/exclude_af_concordance.txt`; `af_concordance_build.{py,sh}` writes it, and needs
@@ -268,4 +276,14 @@ files that were never carried over: the AF-concordance pair, the ctrl-vs-ctrl st
 `config.sh`, `06_ancestry_qc.sh`, `07_gwas.sh` and `05_excludelist.py` differ, with this copy
 taken as authoritative.
 
-Not committed anywhere yet — `git init` has been run, but there is no remote.
+**Committed as of 2026-08-19 (`1277fc4`) — but there is still no remote.** That commit is the first
+to carry `PROJECT_LOG.md`, `af_concordance_build.{py,sh}`, `08_ctrl_ctrl_filter.{py,sh}` and the
+`diag_*` scripts; none of them had a second copy before it. The work now survives an accidental
+`rm` or a bad checkout, and does **not** survive disk or laptop loss. One machine, one disk, with
+history.
+
+`clinical_core_out/` and `results/` remain gitignored, deliberately. Two consequences to know:
+the laptop's `analysis_grain.csv` is the stale 11,918-row one (BR-DSNWGS as 19 AFR) and must never
+be rsynced upward over the cluster's correct 12,495-row grain; and `results/pca/*_eta2.csv` is
+unversioned, which is why the 0.984 / 0.757 baseline survived only because the numbers were typed
+into `PROJECT_LOG.md` before step 6 pass 2 could overwrite the originals.
