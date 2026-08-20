@@ -75,7 +75,8 @@
 #   The AI writes it only. Sumstats + summary are the deliverables; stdout is aggregate counts.
 #
 # PREREQ: analysis_grain.csv must be at $GRAIN and must carry the PCs from the CURRENT step-6 run.
-#   It is written by clinical_core.ipynb §12. Re-running step 6 invalidates it — regenerate and
+#   It is written by analysis_grain.py §12 (was clinical_core §12 until the clinical side was
+#   split in two). Re-running step 6 invalidates it — regenerate and
 #   re-copy, or this silently runs on stale covariates. See README §3 step 7.
 #
 #   ./submit.sh scripts/07_gwas.sh

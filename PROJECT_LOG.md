@@ -49,20 +49,34 @@ measured what it does: **EUR max eta² 0.757 → 0.036, a 95% reduction. Apply i
 wait on AJ before proceeding; it needs a different instrument, and the leading hypothesis is that
 it is real sub-continental structure rather than artifact.
 
-**Immediate next step — step 6 pass 2, but PRESERVE the baseline first. Step 6 is a one-way door.**
+**Immediate next step — step 6, ONCE. It is no longer a one-way door and no longer runs twice.**
+Restructured 2026-08-19; the entry below has the full argument. Run it from `wgs_core.ipynb` §3,
+or by hand:
 
 ```bash
 cd /data/CARDPB2/sysbio/wgs && source config.sh
-mv ${MERGED_DIR}/by_ancestry_qc ${MERGED_DIR}/by_ancestry_qc_unfiltered   # instant, same fs
-./submit.sh scripts/06_ancestry_qc.sh                                     # recreates the dir
+
+# 1. Adopt the existing unfiltered pass as stage A. Its inputs have not changed, so
+#    job 27602590's output IS stage A's output — this saves ~13-14 min x 11 strata.
+D=${MERGED_DIR}/by_ancestry_qc
+mkdir -p "$D/unfiltered"
+mv "$D"/cohort_*_qc.* "$D"/cohort_*_pca.* "$D"/*_prune.* "$D/unfiltered"/
+
+# 2. One submission: build the list from the unfiltered set, apply it, PCA both generations.
+./submit.sh scripts/06_ancestry_qc.sh
 ```
 
-Without the `mv`, pass 2 overwrites `cohort_<ANC>_qc.*`, every eigenvec, and (via `tee` without
-`-a`) `step6_summary.txt` — and it poisons any future rebuild of the blacklist, because
-`af_concordance_build` derives its frequencies from those same files.
+The `mv` here is a one-time migration, not a ritual to remember: step 6 writes the baseline to
+`unfiltered/` itself from now on, and skips stage A when a valid fileset postdates the merge.
 
-Then, in order: `ancestry_qc_manifest.py`, `clinical_core.py` again (PCs changed → grain must be
-rebuilt), then step 7.
+**Before trusting the output, check stage B produced 4,415 variants** — that is what job 27697096
+built from the grain, and matching it is what says the annot split changed nothing. `clinical_core.py`
+§12a prints the finer-grained version (shared IIDs must agree with the grain on `source_callset`
+and `dx_detailed`). A mismatch means the exclusion list moved for a non-genotype reason.
+
+Then: `clinical_core.py` (PCs changed → grain rebuilt), `review/plot_af_filter_effect.py` for the
+before/after figure, then step 7. `ancestry_qc_manifest.py` no longer needs a separate run — step 6
+stage E calls it for both generations.
 
 **WITHDRAWN — the `MIN_CELL=40 MIN_HWE_CONTROLS=40` rerun proposed earlier.** `MIN_CELL=100` is
 the GWAS-relevance floor (cf. "17 of 44 contrasts reach ≥100 per arm"), not a noise control, and a
@@ -123,6 +137,237 @@ AMP-PD side of the primary contrast; step 7's differential-missingness filter is
 three callsets were sex-updated from `<dataset>/metadata/`, not from the corrected
 `clinical_core_out/`); and the BR-DSNWGS PCs and ancestry labels already sitting in
 `analysis_grain.csv` for a callset that had never cleared step 1.
+
+---
+
+## 2026-08-20 (later) — both sentinel verdicts settled. The 2026-08-19 HWE claim was wrong.
+
+**Did.** Read the two sentinel variants out of job 27857727's `.afreq` (by header name this time)
+and `.snplist` intermediates. This resolves the contradiction flagged in the entry below.
+
+**CR1 `chr1:207521012:T:C` — the dropout reading is CONFIRMED, exactly.** `divco_hs` EUR/AD shows
+**OBS_CT 156 against 242 possible (121 samples × 2) = 64.5% call rate**, matching the 2026-08-19
+entry's number precisely. Every other arm is complete: `wgs_harm` AD 1314/1314, `wb_dwgs` control
+6124/6128, `wgs_harm` control 656/656, both `other` arms 100%.
+
+**And the decisive control: the SAME `divco_hs` samples are 242/242 — fully called — at the LRRK2
+variant.** So the dropout is specific to this site, not to those samples. Non-random dropout plus an
+ALT frequency inflated to 0.365 against 0.170–0.212 everywhere else is lost reference calls.
+**CR1 stays excluded**, on the frequency test (|dAF| 0.196, z ≈ 7) plus this mechanism.
+
+**But the HWE corroboration claimed on 2026-08-19 does not exist.** That entry says CR1 "fails HWE
+in **all three** testable callsets"; it **PASSES all three** (`AJ/wb_dwgs`, `EUR/wb_dwgs`,
+`EUR/wgs_harm`). It also says LRRK2 failed "both testable callsets"; LRRK2 fails **AJ/`wb_dwgs`
+only**. Aggregate HWE counts are byte-identical across jobs 27697096 and 27857727 (97 / 132 /
+1,680), so the sets never changed and the earlier reading was simply wrong. **Nothing about the
+conclusions changes** — CR1 was always excluded on frequency, not HWE — but "het excess in three
+independent callsets is paralog/CNV collapse" must not be repeated. Per the rules in `CLAUDE.md`
+this is a new entry; the 2026-08-19 entry stands as written.
+
+**LRRK2 `chr12:40227079:C:T` — confirmed a false positive, and the reason is now airtight.** Not
+frequency-flagged (max spread 0.058−0.023 = 0.034, under the 0.05 threshold). Call rate is complete
+in every arm. Its only basis is one HWE failure in AJ/`wb_dwgs` — the 0.24×-of-chance row. **The
+same callset, tested in EUR with 3,064 controls instead of 638, PASSES.** A real het-excess
+mechanism in `wb_dwgs` would appear more strongly in the 4.8×-larger sample, not vanish from it.
+This is stronger evidence than the ratio argument alone.
+
+**So the HWE excess-over-chance gate is fully determined**: it leaves CR1 excluded (frequency-
+derived, untouched) and un-excludes the LRRK2 variant. No ambiguity left.
+
+**Incidental:** `AJ_*.afreq` does not exist — the glob failed. Expected, and a third confirmation
+that no AJ frequency comparison ever ran: no AJ cell had two callsets above `MIN_CELL`.
+
+---
+
+## 2026-08-20 — step 6 ran as ONE pass. Grain rebuilt. The sentinel table was the stale fix.
+
+**Did.** Ran the restructured step 6 (job **27857727**, 7m13s) and rebuilt the grain. Wired both
+sentinel call sites onto `gene_annot.py` and deleted the hardcoded tables. Added `CLAUDE.md`.
+
+**The refactor is behavior-preserving, measured two ways.** Stage B rebuilt the exclusion list
+through `sample_annot.csv` and got **4,415 variants** — identical to job 27697096's count from the
+grain. §12a's self-check reports **12,495 shared IIDs, 0 callset mismatches, 0 dx mismatches, 0
+absent**. The annot split changed nothing.
+
+**Stage A reuse worked: 7m13s against ~2.5 h.** All 11 strata printed `reused`, so the migrated
+pass-1 filesets were adopted and `cohort_merged` was never re-scanned. Less work than the old pass
+2 alone, as predicted. Filtered set: EUR 7,538,809 → 7,534,424 variants; both manifests written at
+18:02 with 12,495 rows and `with PCs: 12,361`.
+
+**Grain: 12,495 rows × 22 cols, 17 viable contrasts, and the BR-DSNWGS item is CLOSED.** The 95
+retained BR samples are 76 EUR / 13 AJ / 3 AMR / 1 AAC / 1 AFR / 1 CAH — the corrected labels
+minus one EUR and one AJ duplicate. The 19 AFR / 67 EUR grain is gone.
+
+**AJ is closed, and not by the eta² argument.** `AJ/AD` is `wgs_harm`=95 + `divco_hs`=2 = 97,
+under the 100 floor, so AJ cannot field the primary AD-vs-PD contrast at all. Its three viable
+contrasts (`PD_amppd_vs_control_amppd`, `PD_vs_DLB`, `PD_vs_control`) all come back
+`within_cohort` — ~96% `wb_dwgs` on both arms. eta² measures callset↔phenotype collinearity, which
+cannot bias a contrast whose arms share a callset. **So the unsolved 0.962 has no consumer.** This
+retires the AJ question on power and design rather than on the untested sub-continental-structure
+hypothesis, which remains untested and no longer blocks anything.
+
+**FOUND — the sentinel table was wrong, and the fix for it had been written and never wired in.**
+`gene_annot.py` exists precisely to replace the hardcoded `[(name, chrom, pos, window)]` list, and
+its docstring already measured the damage. Re-measured against `ref/refFlat.txt`:
+
+| sentinel | window covered of gene | missed |
+|---|---|---|
+| CR1 | **37.0%** | 91,765 bp |
+| LRRK2 | **52.0%** | 69,284 bp |
+| SNCA | 66.5% | 38,304 bp |
+| BIN1 | 96.7% | 1,977 bp |
+
+The set also contained **no HLA gene**, while `HLA-DRB1` is one of this study's two real findings.
+So `08_ctrl_ctrl_filter.py` could print "no known AD/PD locus among the flagged" while sitting on
+it. `SENTINEL_LOCI` and `parse_id` were duplicated verbatim across both scripts — three copies of
+one concept, and the consolidated version was inert in the same directory.
+
+**Changed.** Both call sites now `from gene_annot import sentinel_hits` (full refFlat transcript
+extents ±500 kb, build-verified via APOE, warns on unresolvable symbols); both hardcoded tables and
+both `parse_id` copies deleted; both print an unmissable banner if refFlat cannot be read, because
+"none found" must not be printable when the check did not run. Verified: the new windows catch both
+of this run's hits as `CR1±500kb` and `LRRK2±500kb`.
+
+**The tripwire is a report, not a gate, and that is new.** In the two-pass shape a human read it
+between submissions. Stage C now applies the list four minutes later in the same job, so the
+warning arrives after the fact. Left as a report with the timing stated in its own output;
+converting it to a hard gate is still open.
+
+**METHODS POINT, unresolved — the HWE stage has no excess-over-chance gate.** `hwe_failed |= fail`
+unions every failure in regardless of whether that (stratum × callset) row shows any excess, and
+the union is applied to **all** strata. This run: EUR/`wgs_harm` 1,680 vs 377 expected = **4.5×**
+(real, and from the smallest sample of the three — consistent with mismapping in the lifted
+callset); EUR/`wb_dwgs` 0.35×; AJ/`wb_dwgs` 0.24×. The two below-chance rows still contributed up
+to 229 variants. Underdispersion is expected at these control counts, which is a second reason a
+below-chance row should not vote. Gating on observed > 2× expected would keep EUR/`wgs_harm` and
+drop the other two.
+
+**Also found — a documentation contradiction to settle before that gate is built.** The 2026-08-19
+entry says CR1 fails HWE in all three testable callsets; this run's `.snplist` files say it passes
+all three, and LRRK2 fails only in AJ. The aggregate counts are byte-identical across the two jobs
+(97 / 132 / 1,680), so the underlying sets are the same and one reading is wrong. Which one decides
+whether the HWE gate would un-exclude the LRRK2 variant. **Unresolved.**
+
+**Process finding, and the reason `CLAUDE.md` now exists.** Both sentinel hits had already been
+resolved in the 2026-08-19 entry, with a *better* CR1 explanation (64.5% call rate in `divco_hs` —
+dropout, not a frequency difference) than the one re-derived here from z ≈ 7. The re-derivation
+also mislabelled `.afreq` columns positionally, hiding the very call-rate number that settles it.
+Two rules written down: grep this log before investigating an anomaly, and never let a replacement
+sit unwired.
+
+**Next.** Settle the HWE contradiction (one command against the `.snplist` files), then decide the
+HWE excess gate. Both sentinel verdicts stand for now: CR1 excluded on dropout, LRRK2 excluded on a
+chance-level hit and would return if the gate lands. Then step 7.
+
+---
+
+## 2026-08-19 — step 6 collapsed to ONE pass. The circular ordering was never real.
+
+**Did.** Restructured step 6 from two submissions with a hand-run script and a mandatory `mv`
+between them into a single job with five stages. Split `sample_annot.csv` out of the grain,
+switched `af_concordance_build` onto it, added `review/plot_af_filter_effect.py` and a
+before/after section to `wgs_core.ipynb`.
+
+**Found — the cycle that forced two passes does not exist, and it is worth being precise about
+why, because the wrong version was written into four files.** The claim was
+`grain <- §12 <- manifest <- step 6`, so step 6 could not depend on the grain. Two independent
+facts dissolve it:
+
+1. **`af_concordance_build` never needed the grain.** It reads `IID -> (source_callset,
+   dx_detailed)` and nothing else. Its own `read_grain` also parsed `ancestry` — and the value
+   was never used: `cell[(g[2], g[0])]` keys on (dx, callset), and the stratum comes from which
+   `cohort_<ANC>_qc` fileset a sample is in. Both fields it does use are pure clinical output,
+   available from §7's crosswalk and §4's reconciliation before step 1 runs. They arrived via the
+   grain only because the grain is the file that happens to carry dx and the PCs together. A
+   file-layout accident was read as a data dependency.
+
+2. **The QC pass never needed re-running.** `--geno`, `--maf` and `--hwe` are per-variant on a
+   fixed sample set (no `--mind`), so they commute with `--exclude`. This is the same identity the
+   premise test relied on to measure the filter's effect without a rerun — it was used as a
+   measurement trick and not recognised as a statement about the pipeline's structure. Pass 2 was
+   re-scanning 527 GiB to recompute numbers it already had.
+
+**Also found:** `ancestry_qc_manifest.py`'s docstring says §12 reads its output. §12 does not — it
+globs `cohort_*_pca.eigenvec` and merges onto step 5's `retained_manifest.csv` directly. Its only
+consumer is `plot_pcs_by_callset.py`. So the manifest is not on the grain's path either, and the
+middle link of the claimed cycle was wrong as well.
+
+**Changed.**
+
+| | |
+|---|---|
+| `clinical_core.py` | new §12a writes `sample_annot.csv`, unconditionally, before any genotype step. Self-checks against an existing grain: shared IIDs must agree on `source_callset` and `dx_detailed`. |
+| `af_concordance_build.py` | `--annot` replaces `--grain` (kept as an alias). Reader keys on column NAMES, so it takes either file — which is what makes the two directly comparable. |
+| `06_ancestry_qc.sh` | five stages: A unfiltered QC+PCA -> `unfiltered/`, B build the list from A, C apply, D filtered prune+PCA, E both manifests. Stage A is skipped when a valid fileset postdates the merge. |
+| `af_concordance_build.sh` | demoted to a knob-tuning wrapper; step 6 calls the `.py` directly. |
+| `review/plot_af_filter_effect.py` | new. Dumbbell of max eta^2 per stratum before/after, plus PC scatters for the two largest strata, shared limits per row. |
+| `.gitignore` | `results/pca/*_eta2.csv` and `af_filter_effect*.csv` now versioned. |
+
+**Two failure modes the old shape had, now gone by construction rather than by guard.** The
+`mv by_ancestry_qc` before pass 2 — the baseline is a permanent named output. And the stale-list
+refusal — stage B rebuilds the list in-job from this merge, so an old file cannot be applied. The
+mtime guard survives only on `SKIP_AF_BUILD=1`, the one path by which a list this job did not
+build can still reach stage C.
+
+**Also fixed a bug introduced while writing this.** The first `.gitignore` draft un-ignored
+`results/` wholesale to version the eta^2 tables, which swept in `results/retained_samples_manifest.csv`
+— one row per sample. Narrowed to `results/pca/` with explicit negations and verified with
+`git check-ignore`.
+
+**Next.** Nothing has been run yet. From the current cluster state the migration is a rename:
+job 27602590's output IS stage A's output, so notebook §3 moves it to `by_ancestry_qc/unfiltered/`
+and step 6 skips the scan. What runs is stage B, the exclusion, and the filtered prune+PCA —
+less work than the old pass 2 alone.
+
+**The check that decides whether this refactor was behaviour-preserving:** stage B must produce
+**4,415** variants, matching job 27697096, which built the list from the grain. §12a's self-check
+is the finer-grained version of the same question. A mismatch means the two reconciliation paths
+disagree and the exclusion list would move for a non-genotype reason — stop there, do not
+proceed to step 7.
+
+**Removed `wgs_core_draft.ipynb`.** 14 markdown cells, zero code — a runbook covering steps 0-8,
+added in `1277fc4` after the executable `wgs_core.ipynb` already existed. Its status tables and
+eta^2 prose were a near-verbatim fourth copy of `HANDOFF.md` and this file's header, and its
+step-6 cell was titled "**runs twice**", so the restructuring above made it actively wrong. The
+content that was genuinely unique — the step-0 bcftools/plink2 commands for BR-DSNWGS, and the
+explicit `--export=` invocations for steps 1 and 2, which `HANDOFF.md` had been eliding as `...` —
+is folded into HANDOFF's Run order. Earlier log entries still reference the file by name; they are
+history and stay as written.
+
+**Not addressed:** AJ. The filter still does not touch it (0.984 -> 0.962) and this change does
+not pretend to. The reference-panel projection that would decide whether AJ's split is real
+sub-continental structure is still unrun.
+
+**Split the clinical side in two, same day.** `clinical_core.py` used to hold §1-14 and be run
+twice; reaching §11-13 meant re-executing §1-10, which re-read eleven clinical files and
+**rewrote the sex-update files step 1 had already consumed**. Nothing checked they still matched
+what genotools applied — and given the laptop/cluster clinical-input divergence in known issue 4,
+that is a live hazard, not a theoretical one.
+
+Two *executions* are irreducible and this is worth stating plainly, because the shape looks
+exactly like the step-6 cycle above and is not the same thing. Step 1 applies the sex files; the
+grain carries step 6's PCs because step 7 reads them as covariates. There is no column to split
+out — the round trip is real. What was avoidable is running the same script twice:
+
+| file | runs | reads |
+|---|---|---|
+| `clinical_common.py` | imported, never run | — |
+| `clinical_core.py` | once, before step 1 | clinical files + psams |
+| `analysis_grain.py` | once, after step 6 | §9's audit tables + manifest + eigenvecs |
+
+`analysis_grain.py` re-derives nothing: §9 already writes `individual_core.csv` and
+`genome_crosswalk.csv`, and those carry every column §11-13 use. Verified before moving anything —
+§13 turned out to need only the `grain` frame and the `.fam` files, and `AMPPD_CALLSETS` was the
+one constant that had to move with it. **Section numbers are unchanged**, so every `§12`-style
+cross-reference in `HANDOFF.md`, `config.sh` and `scripts/` still resolves; only the file moved.
+§12a stays in `clinical_core.py` despite its number, because it must run before step 1.
+
+**Also updated `README.md`** — it was dated 2026-08-10 and described a three-callset merge, sex
+files living in each callset's `metadata/`, and a script list (`run_genotools.sh`,
+`wgs_merge_s1_merge_bed.sh`, `update_sex.py`) that no longer exists. Now carries the four-callset
+state, the `scripts/00`-`08` list, the real handoff locations, and the gotchas learned since
+August. It does **not** carry a run order — that lives in `HANDOFF.md`, and two copies of a run
+order is how the wrong one gets followed.
 
 ---
 

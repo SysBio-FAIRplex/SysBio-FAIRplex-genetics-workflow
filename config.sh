@@ -75,10 +75,18 @@ HIGHLD_BED="${SHIP_REF}/highld_exclude_hg38.bed"   # PCA input only — ships in
 REFFLAT="${SHIP_REF}/refFlat.txt"                  # locus coordinates for gene_annot.py
 
 # ── what clinical_core.py hands the genotype steps ───────────────────────────
-# §10 -> per-callset sex files, read by step 1.
-# §12 -> analysis_grain.csv,   read by step 7.
+# §10  -> per-callset sex files,  read by step 1.
+# §12a -> sample_annot.csv,       read by step 6's AF-concordance stage.
+# §12  -> analysis_grain.csv,     read by step 7.  (§11-13 live in analysis_grain.py)
 # Overridable so a sensitivity run can point step 7 at an alternative grain.
 GRAIN="${GRAIN:-${CLINICAL_OUT}/analysis_grain.csv}"
+
+# sample_annot.csv is the grain's PC-FREE half: IID, source_callset, pheno, dx_detailed.
+# It exists because the AF-concordance stage needs (callset, dx) per sample and NOTHING else —
+# it never reads a PC — while the grain cannot be built until step 6 has produced PCs. Splitting
+# the file splits the dependency, which is what lets step 6 run as ONE pass instead of two.
+# §12a writes it from §7's crosswalk and §4's reconciliation, so it is available before step 1.
+ANNOT="${ANNOT:-${CLINICAL_OUT}/sample_annot.csv}"
 
 # Step 1 takes SEX_FILE per callset; this is the naming rule it follows.
 #   SEX_FILE="$(sex_file wgs_harm)"
@@ -89,7 +97,8 @@ sex_file() { echo "${CLINICAL_OUT}/${1}_update_sex.txt"; }
 # output dir. Two implementations of the same files; the awk one is what actually runs.
 # Deliberately not named here so nothing shadows step 7's. See README "known duplication".
 
-# Written by the genotype side (step 6's boundary script), read back by clinical_core.py §12.
+# Written by the genotype side (step 6 stage E), read by the review tooling. NOT read by §12,
+# which globs the eigenvecs directly — see the docstring in scripts/ancestry_qc_manifest.py.
 RETAINED_MANIFEST="${RETAINED_MANIFEST:-${MERGED_DIR}/by_ancestry_qc/retained_samples_manifest.csv}"
 
 # ── modules ──────────────────────────────────────────────────────────────────

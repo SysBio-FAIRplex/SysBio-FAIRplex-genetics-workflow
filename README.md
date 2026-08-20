@@ -2,7 +2,23 @@
 
 ## Project Overview
 
-This pipeline processes whole genome sequencing (WGS) data from multiple cohorts into a unified, harmonized GRCh38 format for ancestry prediction, sample and variant QC, and GWAS.
+This pipeline processes whole genome sequencing (WGS) data from multiple cohorts into a unified,
+harmonized GRCh38 format for ancestry prediction, sample and variant QC, and GWAS. The analysis it
+feeds is **AD vs PD across AMP-AD and AMP-PD, with AD defined by neuropathology**.
+
+**This file is the infrastructure reference: what the tools are, where files live, and which
+gotchas bite.** It deliberately does not carry project state. Four documents, one job each:
+
+| doc | answers |
+|---|---|
+| `README.md` (this file) | how the machine is set up and where things live |
+| `HANDOFF.md` | **what is true now** — run order, status, open issues. Start here. |
+| `PROJECT_LOG.md` | what we did, why, and what was ruled out. Append-only. |
+| `RUNLOG.md` | which jobs ran and how they ended. Generated: `bash scripts/runlog.sh --md > RUNLOG.md` |
+
+**One root.** Code and data share a root — on biowulf `/data/CARDPB2/sysbio/wgs`, on a laptop
+wherever the repo was cloned. Nothing in the project holds an absolute path: `config.sh` derives
+the root from its own location, and `clinical_common.py` does the same. To move it, copy the folder.
 
 ---
 
@@ -29,9 +45,23 @@ This pipeline processes whole genome sequencing (WGS) data from multiple cohorts
       ref_panel_ancestry_updated.txt
     plots/                                           ← interactive HTML PCA plots per dataset
     merged/
-      cohort_merged.{bed,bim,fam}                   ← final merged cohort (3 datasets)
+      cohort_merged.{bed,bim,fam}                   ← merged cohort, ALL FOUR callsets
       merge_list.txt
       tmp_merge/
+      relatedness/
+        retained_manifest.csv                       ← step 5 output; steps 6 and §11-12 read it
+        exclude_reasons.tsv
+      exclude_af_concordance.txt                    ← step 6 stage B builds it, stage C applies it
+      af_concordance/                               ← stage B scratch (per-cell .afreq, .snplist)
+      by_ancestry_qc/                               ← STEP 6 OUTPUT
+        unfiltered/                                 ← stage A: the BASELINE, kept permanently
+          cohort_{ANC}_qc.{bed,bim,fam}
+          cohort_{ANC}_pca.{eigenvec,eigenval}
+          retained_samples_manifest.csv             ← "before" for the AF-filter comparison
+        cohort_{ANC}_qc.{bed,bim,fam}               ← stage C: the ASSOCIATION set (step 7 reads)
+        cohort_{ANC}_pca.{eigenvec,eigenval}        ← stage D: the COVARIATES (§12 reads)
+        retained_samples_manifest.csv               ← "after"
+        step6_summary.txt
     amp-ad-genomics/
       WGS_Harmonization/
         joint_calls/                                 ← 24 b37 GATK scatter-interval VCFs + .tbi
@@ -80,13 +110,27 @@ This pipeline processes whole genome sequencing (WGS) data from multiple cohorts
           FILTERED.wb_dwgs_ancestry_*.{pgen,psam,pvar,samples}
           FILTERED.wb_dwgs_{ANCESTRY}.{pgen,psam,pvar}
       BR-DSNWGS/
-        joint_calls/                                 ← NOT YET AVAILABLE
+        joint_calls/
+          AMPPD_postmortem_joint_gt_call_97donors.vcf.gz   ← 97 postmortem donors
         metadata/
-  scripts/
-    README.md                                        ← this file
-    archive/                                         ← superseded scripts
+        pgen/
+          br_dsnwgs_hg38.{pgen,pvar,psam}            ← GRCh38 pgen (see --sort-vars gotcha)
+        genotools/
+  clinical_core_out/                                 ← THE PHENOTYPE BOUNDARY. One location each;
+    {callset}_update_sex.txt                         ←   nothing is copied into data/, so a handoff
+    sample_annot.csv                                 ←   file cannot go stale against its producer.
+    individual_core.csv                              ← §9 audit table -> analysis_grain.py
+    genome_crosswalk.csv                             ← §9 audit table -> analysis_grain.py
+    analysis_grain.csv                               ← step 7 reads this
+    qc_outcomes.csv  contrasts.csv  pheno/  covar/
+  results/                                           ← plots + eta^2 evidence (mostly gitignored)
+  scripts/                                           ← see Scripts below
     logs/                                            ← all sbatch .o/.e files
-    swarm/                                           ← swarm files and logs
+  ref/                                               ← ships with the code: highld BED, refFlat
+  README.md   HANDOFF.md   PROJECT_LOG.md   RUNLOG.md
+  config.sh   submit.sh
+  clinical_common.py   clinical_core.py   analysis_grain.py
+  wgs_core.ipynb                                     ← the orchestrator notebook
 ```
 
 ---
@@ -98,143 +142,90 @@ This pipeline processes whole genome sequencing (WGS) data from multiple cohorts
 | WGS_Harmonization | AMP-AD (MayoRNAseq, MSBB, ROSMAP) | 1,894 | b37 → GRCh38 | 24 GATK scatter VCFs | ✅ Complete | ✅ Included |
 | WB-DWGS | AMP-PD | 10,418 | GRCh38 | Merged pgen | ✅ Complete | ✅ Included |
 | DivCo_HS | AMP-AD diverse cohorts | 1,019 | GRCh38 | Single merged VCF | ✅ Complete | ✅ Included |
-| BR-DSNWGS | AMP-PD | TBD | TBD | TBD | ⏳ Pending data | ⏳ Pending |
+| BR-DSNWGS | AMP-PD (postmortem) | 97 | GRCh38 | Single joint-call VCF | ✅ Complete | ✅ Included |
+
+Merged cohort: **172,497,055 variants × 13,334 samples**; 12,495 retained after step 5.
+Per-step state lives in `HANDOFF.md`, not here.
 
 ---
 
 ## Scripts
 
+Every step is a numbered script in `scripts/`, submitted through `submit.sh`, which resolves the
+root and sources `config.sh`. The scripts named in older revisions of this file
+(`run_genotools.sh`, `wgs_merge_s1_merge_bed.sh`, `update_sex.py`, the per-callset `*_s1_*.sh`
+pairs) were consolidated into these and no longer exist.
+
 ```
 scripts/
-  # ── Data acquisition ──────────────────────────────────────────────────────
-  helix_synapse_download.sh              ← template for Synapse downloads on Helix
-  synapse_download_sbatch.sh             ← alternative sbatch-based Synapse download
+  # ── the pipeline, in order ────────────────────────────────────────────────
+  00_setup_env.sh              ← venv + GenoTools install
+  01_genotools.sh              ← per callset: sex update -> filter -> bed -> ancestry + QC
+  02_normalize.sh              ← per callset: chr naming + variant IDs, to a common convention
+  03_merge.sh                  ← plink1.9 union merge of all four -> cohort_merged
+  04_relatedness.sh            ← KING, report-only
+  05_excludelist.{py,sh}       ← duplicates, relatives, QC fails -> retained_manifest.csv
+  06_ancestry_qc.sh            ← per-ancestry variant QC + PCA. FIVE STAGES, ONE SUBMISSION:
+                                   A unfiltered QC+PCA   B build AF exclusion list from A
+                                   C apply it            D filtered QC+PCA
+                                   E both sample manifests
+  07_gwas.sh                   ← plink2 --glm per ancestry per contrast
+  08_ctrl_ctrl_filter.{py,sh}  ← control-vs-control artifact scan. ANNOTATES, never subtracts.
 
-  # ── WGS_Harmonization (AMP-AD, b37 → GRCh38) ─────────────────────────────
-  wgs_harm_s1_filter_concat.sh           ← sbatch: bcftools concat + filter + sort → b37 VCF
-  wgs_harm_s2_b37_to_pgen.sh             ← sbatch: plink2 b37 VCF → b37 pgen
-  wgs_harm_s3_liftover.sh                ← sbatch: liftOver BED approach → GRCh38 pgen
+  # ── called by step 6, not submitted directly ──────────────────────────────
+  af_concordance_build.{py,sh} ← stage B. The .sh is a wrapper for re-tuning knobs only.
+  ancestry_qc_manifest.py      ← stage E. retained_samples_manifest.csv, once per generation.
 
-  # ── DivCo_HS (AMP-AD, already GRCh38) ────────────────────────────────────
-  divco_hs_s1_filter.sh                  ← sbatch: bcftools filter + annotate → filtered VCF
-  divco_hs_s2_vcf_to_pgen.sh             ← sbatch: plink2 filtered VCF → GRCh38 pgen
+  # ── read-only diagnostics ─────────────────────────────────────────────────
+  diag_order.py                ← variant order vs the reference panel. RUN THIS on any new
+                                 callset before trusting its ancestry output (see gotchas).
+  diag_cah.sh                  ← postmortem of a genotools output directory
+  diag_threads.py              ← what the process actually sees vs the SLURM allocation
+  gene_annot.py                ← locus coordinates from ref/refFlat.txt
+  genotools_capped.py          ← GenoTools entry point that respects the allocation
+  runlog.sh                    ← regenerates RUNLOG.md from the SLURM accounting log
 
-  # ── Shared / reusable ─────────────────────────────────────────────────────
-  liftover_pgen.sh                       ← reusable liftover worker (called by wgs_harm_s3)
-  update_sex.py                          ← Python: join pgen psam with harmonized metadata,
-                                            run plink2 --update-sex for each dataset;
-                                            sex update files stored in each dataset's metadata/ dir
-  run_update_sex.sh                      ← sbatch wrapper for update_sex.py
-  run_genotools.sh                       ← reusable sbatch: sex update → filter → bed → GenoTools
-                                            submit with --export=PGEN=...,SEX_FILE=...,OUT_DIR=...,DATASET=...
-                                            also produces filtered bed as byproduct used in merge
-
-  # ── Merge ─────────────────────────────────────────────────────────────────
-  wgs_merge_s1_merge_bed.sh              ← sbatch: plink1.9 union merge of all 3 filtered beds
-
-  # ── Analysis ──────────────────────────────────────────────────────────────
-  plot_ancestry_pca.py                   ← plotly 3D PCA plots from genotools JSON → HTML
+review/                        ← runs locally on downloaded outputs; no cluster, no genotypes
+  plot_af_filter_effect.py     ← the AF-filter before/after proof figure + eta^2 tables
+  plot_pcs_by_callset.py       ← PC scatter by callset + eta^2 per PC per stratum
+  plot_gwas.py                 ← QQ + Manhattan
+  compare_pcs.py  mask_cohort_artifacts.py
 ```
+
+The clinical side is three files at the project root:
+
+| file | runs | writes |
+|---|---|---|
+| `clinical_common.py` | imported, never run | — paths, readers, reconciliation rules |
+| `clinical_core.py` | **once, before step 1** | sex files, audit tables, `sample_annot.csv` |
+| `analysis_grain.py` | **once, after step 6** | `analysis_grain.csv`, pheno/covar, contrasts |
+
+Two runs, not one, and that is irreducible: step 1 applies the sex files, and the grain carries
+step 6's PCs because step 7 reads them as covariates. They are two *files* rather than one script
+run twice so that nothing re-derives, and so the second half cannot rewrite the sex files step 1
+already consumed.
 
 ---
 
 ## Pipeline Order
 
-### WGS_Harmonization
+**The authoritative, copy-pasteable run order is the "Run order" section of `HANDOFF.md`** —
+it carries the exact `--export=` arguments and stays with the current state. It is not duplicated
+here, because two copies of a run order is how the wrong one gets followed.
 
-> **Key context**: The 24 VCFs are GATK scatter-interval files, NOT chromosome-split. Each file contains variants from multiple chromosomes. The pipeline processes them as a genome-wide dataset.
+The shape:
 
-```bash
-# 1. Download data (run on Helix in tmux)
-synapse get -r syn11707420 --downloadLocation .../WGS_Harmonization/joint_calls/
-
-# 2. Reindex VCFs (stale .tbi files from download)
-bash scripts/wgs_harm_reindex_vcfs.sh   # generates + submits as swarm
-
-# 3. Filter + concat all 24 scatter VCFs into single sorted b37 VCF
-JID1=$(sbatch scripts/wgs_harm_s1_filter_concat.sh | awk '{print $NF}')
-
-# 4. Convert filtered b37 VCF → b37 pgen
-JID2=$(sbatch --dependency=afterok:${JID1} scripts/wgs_harm_s2_b37_to_pgen.sh | awk '{print $NF}')
-
-# 5. Liftover b37 pgen → GRCh38 pgen
-JID3=$(sbatch --dependency=afterok:${JID2} scripts/wgs_harm_s3_liftover.sh | awk '{print $NF}')
-
-# 6. Run GenoTools (sex update + filter + bed + ancestry/QC)
-sbatch \
-  --job-name=genotools_wgs_harm \
-  --output=scripts/logs/genotools_wgs_harm.o \
-  --error=scripts/logs/genotools_wgs_harm.e \
-  --export=PGEN=/data/CARDPB2/sysbio/wgs/data/amp-ad-genomics/WGS_Harmonization/pgen/wgs_harm_hg38,SEX_FILE=/data/CARDPB2/sysbio/wgs/data/amp-ad-genomics/WGS_Harmonization/metadata/wgs_harm_hg38_update_sex.txt,OUT_DIR=/data/CARDPB2/sysbio/wgs/data/amp-ad-genomics/WGS_Harmonization/genotools,DATASET=wgs_harm \
-  scripts/run_genotools.sh
-# Note: produces wgs_harm_hg38_filtered_bed.{bed,bim,fam} as byproduct used in merge
+```
+clinical_core.py                     §1-10 sex files, §12a sample_annot.csv
+  -> 01 genotools (x4)  ->  02 normalize (x4)  ->  03 merge  ->  04 relatedness  ->  05 excludelist
+  -> 06 ancestry QC + PCA            ONE submission, five stages
+analysis_grain.py                    §11-13, on step 6's PCs
+  -> 07 gwas  ->  08 ctrl-vs-ctrl  ->  review/ plots
 ```
 
-### WB-DWGS
-
-> **Key context**: Already GRCh38 merged pgen. GenoTools handles sex update + filtering + bed conversion in one job.
-
-```bash
-# 1. Run GenoTools (sex update + filter + bed + ancestry/QC)
-sbatch \
-  --job-name=genotools_wb_dwgs \
-  --output=scripts/logs/genotools_wb_dwgs.o \
-  --error=scripts/logs/genotools_wb_dwgs.e \
-  --export=PGEN=/data/CARDPB2/sysbio/wgs/data/amp-pd-genomics/WB-DWGS/joint_calls/all_chrs_merged,SEX_FILE=/data/CARDPB2/sysbio/wgs/data/amp-pd-genomics/WB-DWGS/metadata/amp_pd_wbdwgs_update_sex.txt,OUT_DIR=/data/CARDPB2/sysbio/wgs/data/amp-pd-genomics/WB-DWGS/genotools,DATASET=wb_dwgs \
-  scripts/run_genotools.sh
-# Note: produces all_chrs_merged_filtered_bed.{bed,bim,fam} as byproduct used in merge
-```
-
-### DivCo_HS
-
-> **Key context**: Already GRCh38 and pre-merged. FILTER column is all '.' (no PASS flag applied). Sex crosswalk required 3-path ID resolution — see sex crosswalk note below.
-
-```bash
-# 1. Download data (run on Helix in tmux)
-synapse get -r syn68259948 --downloadLocation .../DivCo_HS/joint_calls/
-
-# 2. Delete scatter-interval VCFs (only merged.deduped.vcf.gz needed)
-rm .../DivCo_HS/joint_calls/chr*.vcf.gz{,.tbi}
-
-# 3. Filter + annotate IDs → filtered GRCh38 VCF (no --apply-filters PASS)
-JID1=$(sbatch scripts/divco_hs_s1_filter.sh | awk '{print $NF}')
-
-# 4. Convert filtered VCF → GRCh38 pgen
-JID2=$(sbatch --dependency=afterok:${JID1} scripts/divco_hs_s2_vcf_to_pgen.sh | awk '{print $NF}')
-
-# 5. Run GenoTools (sex update + filter + bed + ancestry/QC)
-sbatch \
-  --job-name=genotools_divco_hs \
-  --output=scripts/logs/genotools_divco_hs.o \
-  --error=scripts/logs/genotools_divco_hs.e \
-  --export=PGEN=/data/CARDPB2/sysbio/wgs/data/amp-ad-genomics/DivCo_HS/pgen/divco_hs_hg38,SEX_FILE=/data/CARDPB2/sysbio/wgs/data/amp-ad-genomics/DivCo_HS/metadata/divco_hs_hg38_update_sex.txt,OUT_DIR=/data/CARDPB2/sysbio/wgs/data/amp-ad-genomics/DivCo_HS/genotools,DATASET=divco_hs \
-  scripts/run_genotools.sh
-# Note: produces divco_hs_hg38_filtered_bed.{bed,bim,fam} as byproduct used in merge
-```
-
-### Merge (all datasets)
-
-> **Key context**: Filtered bed files are a byproduct of each dataset's genotools run. No separate conversion step needed. plink1.9 used for union merge (plink2 non-concatenating merge not implemented in v2.00a6LM).
-
-```bash
-# Merge all three filtered bed files (union — missing genotypes for absent variants)
-sbatch scripts/wgs_merge_s1_merge_bed.sh
-# Output: data/merged/cohort_merged.{bed,bim,fam}
-```
-
-### Downstream Plan
-
-Once merge completes and BR-DSNWGS becomes available:
-
-1. **Cross-dataset relatedness** — run genotools `--related` on merged dataset to identify duplicates and cryptic relatives across cohorts
-2. **Split by ancestry** — use genotools `ancestry_labels` from individual dataset JSON files
-3. **Exclude QC fails** — apply per-ancestry genotools QC outputs (`{ANCESTRY}_pass_fail`) to merged dataset
-4. **Add covariates** — PCs from merged dataset, sex, age, APOE, dataset batch
-5. **GWAS** — per-ancestry, case/control assignment from harmonized metadata
-
-### BR-DSNWGS
-
-> Not yet available. Pipeline TBD based on format and build when data arrives.
+`clinical_core.py` and `analysis_grain.py` run **on the cluster only** — the two machines hold
+different clinical inputs, and a laptop run silently produces a smaller, wrong table. See
+`HANDOFF.md` known issue 4 for the specific file-count trap.
 
 ---
 
@@ -246,13 +237,24 @@ psam sample IDs use three different formats requiring separate resolution paths:
 - **Suffix stripping** (293 samples): specimen IDs like `<individualID>_DLPFC_WGS` — strip `_DLPFC_WGS` suffix to recover numeric `individualID`
 - **Biospecimen lookup** (106 samples): `-D` suffixed specimen IDs like `<specimenID>-D` — match via `specimenID` in biospecimen metadata to get numeric `individualID`
 
-Result: 1019/1019 (100%) matched. Script: `update_sex.py` (see DivCo_HS section).
+Result: 1019/1019 (100%) matched. The crosswalk now lives in `clinical_core.py` §7, not the
+retired `update_sex.py`.
 
 ### WGS_Harmonization
-Sex file at `metadata/wgs_harm_hg38_update_sex.txt`. 1886/1894 (99.6%) matched; 8 samples remain unknown sex.
+1886/1894 (99.6%) matched; 8 samples remain unknown sex.
 
 ### WB-DWGS
-Sex file at `metadata/amp_pd_wbdwgs_update_sex.txt`. 10418/10418 (100%) matched.
+10418/10418 (100%) matched.
+
+### BR-DSNWGS
+97/97 resolved via the AMP-PD sample inventory (`clinical_core.py` §7). 60M / 37F.
+
+### Where the sex files actually live — NOT in `metadata/`
+All four are written by `clinical_core.py` §10 to **`clinical_core_out/{callset}_update_sex.txt`**,
+and step 1 reads them from there directly (`config.sh: sex_file`). Nothing is copied into each
+callset's `metadata/`. That is the point: one location per handoff file, so it cannot go stale
+against the run that produced it. Earlier revisions of this file described the `metadata/` layout,
+and those paths are gone.
 
 ---
 
@@ -266,6 +268,34 @@ Sex file at `metadata/amp_pd_wbdwgs_update_sex.txt`. 10418/10418 (100%) matched.
 - **liftOver requires `chr`-prefixed chromosome names** — b37 uses bare numbers; add `chr` prefix when building BED from pvar.
 - **`set -o pipefail` must come after all `#SBATCH` directives** — SLURM stops parsing `#SBATCH` lines at the first non-comment line. Placing `set -o pipefail` before `#SBATCH` silently drops all resource requests.
 - **DivCo_HS FILTER column is all `.`** — no VQSR was applied; omit `--apply-filters PASS` or all variants will be dropped.
+
+### Learned since (each of these cost a run)
+
+- **GenoTools aligns to the reference panel by COLUMN POSITION, not by variant name.** BR-DSNWGS's
+  pgen was ordered `1,10,11,…,19,2,20,…` (per-chromosome files concatenated alphabetically) while
+  the panel is numeric, so every shared column was projected as a *different* variant and all 97
+  samples came back CAH. Fixed with `--sort-vars` in step 1. **Run
+  `python3 scripts/diag_order.py <panel>.bim <callset>.pvar` on any new callset before trusting its
+  ancestry output** — the other three passed only because their files happened to be numeric.
+- **GenoTools sizes its worker pool from the NODE, not the SLURM allocation.** `os.cpu_count()` on
+  a shared node exceeded biowulf's per-user `ulimit -u` of 1024; `pthread_create` returned EAGAIN
+  and SLURM logged a bare `ExitCode 1:0`. Needs both `scripts/genotools_capped.py` **and**
+  `GENOTOOLS_MAX_WORKERS=16` — the allocation alone is not enough. Pinning `OMP_/NUMBA_NUM_THREADS`
+  is *not* the fix; joblib already does that, and the worker count is the lever.
+- **Step 4's `COMMON_GENO` must stay below the smallest callset's share of the cohort.** BR is
+  97/13,334 = 0.0073, so at `--geno 0.05` every variant BR lacked stayed in the common set and all
+  97 BR samples read as 50% missing — which step 5 then consumed as a duplicate tie-break signal.
+  `0.005` fixes it. Re-check if a callset under ~0.5% is ever added.
+- **A file COUNT is not a file LIST.** The laptop/cluster clinical-input check compared counts,
+  passed, and was wrong: `WGS_Harmonization/metadata` had 5 files on both sides but different ones.
+  Compare names.
+- **`rsync` without `--delete` cannot express a deletion.** Renamed or retired scripts must be
+  removed from the cluster by hand; this has caused three separate stale-artifact bugs. Local
+  absence does not imply cluster absence — a stale `exclude_af_concordance.txt` existed only on the
+  cluster and was silently applied.
+- **A joint call emits nothing at sites monomorphic in its own donors.** BR-DSNWGS therefore
+  contributes to only about half the association set. Expected, not a defect — but it is a methods
+  limitation, and BR sits entirely on the AMP-PD side of the primary contrast.
 - **venv Python must use `module load python/3.11`** — the default system Python (`/usr/local/bin/python`) points to an Anaconda env on compute nodes that breaks `pkg_resources`. Always load `python/3.11` before activating `.venv` in sbatch scripts.
 - **setuptools must be pinned to 67.8.0** — newer versions break `pkg_resources` import needed by genotools. Fix: `pip install setuptools==67.8.0`.
 - **`subprocess.run()` with `capture_output=True` hides plink2 output** — use without `capture_output` or add `stderr=subprocess.STDOUT` so output appears in sbatch logs.

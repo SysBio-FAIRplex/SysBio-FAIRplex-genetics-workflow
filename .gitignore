@@ -17,8 +17,25 @@ demo_sample_check/out/
 
 # ── outputs, all regenerable from code + data ────────────────────────────────
 clinical_core_out/
-results/
 logs/
+
+# results/ — everything ignored EXCEPT the eta^2 evidence tables. Those are aggregate (one row
+# per ancestry stratum: n, callset count, eta^2 per PC — no IIDs, no genotypes), so they are
+# safe to version, and they are the measured justification for the AF-concordance filter.
+#
+# The 0.984 / 0.757 unfiltered baseline survived its first overwrite only because someone had
+# typed the numbers into PROJECT_LOG.md by hand. "Regenerable from code + data" was true in
+# principle and false in practice: regenerating a BASELINE means re-running the step in a state
+# that no longer exists. Version the evidence.
+#
+# The negations are deliberately narrow. results/ also holds retained_samples_manifest.csv,
+# which is one row per SAMPLE and must stay out — an earlier draft of this block un-ignored
+# results/ wholesale and swept it in.
+results/*
+!results/pca/
+results/pca/*
+!results/pca/*_eta2.csv
+!results/pca/af_filter_effect*.csv
 *.log
 slurm-*.out
 

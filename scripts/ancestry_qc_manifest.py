@@ -2,7 +2,11 @@
 """STEP 6 (boundary) — assemble retained_samples_manifest.csv.
 
 Joins the step-5 retained manifest + the step-6 per-ancestry PCs + per-callset source into the
-single artifact the phenotype side consumes (clinical_core.ipynb §12 reads it to build the grain):
+single artifact the review tooling consumes (review/plot_af_filter_effect.py and
+plot_pcs_by_callset.py read it). NOTE: §12 does NOT read this file — it globs
+cohort_*_pca.eigenvec and merges onto step 5's retained_manifest.csv directly. An earlier
+version of this docstring claimed otherwise, and that claim was one leg of the "step 6 must run
+twice" argument. Columns:
     IID, source_callset, ancestry, call_rate, dup_cluster_id, PC1..PCk
 
 Sources (all cluster-side, so the manifest is emitted entirely on the genetics track):

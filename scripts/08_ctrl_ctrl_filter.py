@@ -26,39 +26,15 @@ from pathlib import Path
 import argparse
 import sys
 
-SENTINEL_LOCI = [
-    ("APOE/rs429358", "19", 44_908_684, 50_000),
-    ("APOE/rs7412",   "19", 44_908_822, 50_000),
-    ("TREM2",         "6",  41_160_000, 50_000),
-    ("BIN1",          "2", 127_100_000, 50_000),
-    ("CR1",           "1", 207_500_000, 50_000),
-    ("MAPT/17q21.31", "17", 45_900_000, 200_000),
-    ("SNCA",          "4",  89_700_000, 100_000),
-    ("GBA1",          "1", 155_230_000, 50_000),
-    ("LRRK2",         "12", 40_200_000, 100_000),
-]
+# Sentinel coordinates come from gene_annot.py (full refFlat transcript extents ±SENTINEL_FLANK),
+# not from a table here. This file used to carry its own verbatim copy of a hardcoded
+# [(name, chrom, pos, window)] list AND its own parse_id/sentinel_hits — three duplications of the
+# same thing across two scripts. The copied windows covered 37% of CR1 and 52% of LRRK2 and named
+# no HLA gene, so this script could report "no known locus flagged" while sitting on HLA-DRB1, one
+# of the study's two real findings. Same set, same resolver, both scripts.
+from gene_annot import sentinel_hits, SENTINEL_FLANK
 
 CTRL_TAG = "control_amppd_vs_control_ampad"
-
-
-def parse_id(vid):
-    p = vid.split(":")
-    if len(p) < 2:
-        return None
-    try:
-        return (p[0][3:] if p[0].startswith("chr") else p[0]), int(p[1])
-    except ValueError:
-        return None
-
-
-def sentinel_hits(ids):
-    pos = [(v, parse_id(v)) for v in ids]
-    out = []
-    for name, c, p, win in SENTINEL_LOCI:
-        near = [v for v, cp in pos if cp and cp[0] == c and abs(cp[1] - p) <= win]
-        if near:
-            out.append((name, near))
-    return out
 
 
 def read_p(path, pmax):
@@ -113,16 +89,24 @@ def main():
         print("  There is no true signal in this contrast, so an excess over chance is residual")
         print("  cohort artifact that survived step 6a. Near chance = 6a did its job.")
 
-        sh = sentinel_hits(flagged)
+        try:
+            sh = sentinel_hits(flagged)
+        except (FileNotFoundError, ValueError) as e:
+            # Loud, not silent: "no known locus flagged" must never be printable when the
+            # annotation that would have found one could not be read.
+            print(f"\n  !! SENTINEL CHECK DID NOT RUN ({e}) — the flagged set was NOT checked")
+            print("  !! against any known AD/PD locus. Fix ref/refFlat.txt before reading below.")
+            sh = None
         if sh:
-            print("\n  KNOWN LOCI among the flagged — read before filtering on them:")
+            print(f"\n  KNOWN LOCI among the flagged (refFlat extents ±{SENTINEL_FLANK//1000}kb)"
+                  " — read before filtering on them:")
             for name, near in sh:
-                print(f"    {name:16} {len(near)}: {', '.join(sorted(near)[:4])}")
+                print(f"    {name:22} {len(near)}: {', '.join(sorted(near)[:4])}")
             print("    AMP-AD controls are screened cognitively normal, AMP-PD controls are")
             print("    screened for PD only — so AD risk alleles are genuinely depleted in the")
             print("    AMP-AD arm. A hit here is that asymmetry, NOT an artifact. Filtering it")
             print("    out would delete real signal. This is why .ccfilt.tsv is a separate file.")
-        else:
+        elif sh is not None:
             print("\n  no known AD/PD locus among the flagged")
 
         # ── annotate + filter every other contrast in this ancestry ──

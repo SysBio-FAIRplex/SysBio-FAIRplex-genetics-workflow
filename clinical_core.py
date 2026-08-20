@@ -5,18 +5,24 @@
 #
 # Turns per-cohort clinical files into the phenotype inputs the GWAS needs.
 #
-# The pipeline alternates between this notebook and the cluster. Each cluster round trip
-# is one section here; sections waiting on cluster output skip cleanly and say so.
+# **Runs ONCE, before genetics step 1.** Every section here reads clinical files and psams and
+# needs no cluster output at all, so there is nothing to wait for and nothing that skips.
 #
 # | § | Does | Needs |
 # |---|---|---|
 # | 1–6 | read clinical files, derive `pheno` / `dx_detailed` per donor | local |
 # | 7–9 | resolve genotype samples to donors, check, write audit tables | psam files |
 # | 10 | **out →** per-callset sex-update files | — |
-# | 11 | **in ←** genotools/relatedness QC outcomes, labelled by reason | steps 1–5 |
-# | 12 | **in ←** ancestry + PCs, reconciled to one label per genome | step 6 |
-# | 13 | **out →** per-ancestry covariate and per-contrast phenotype files | step 6 |
+# | 12a | **out →** `sample_annot.csv`, the grain's PC-free half | — |
 # | 14 | appendix: how definition-dependent is the AD arm (read-only) | — |
+#
+# **§11–13 live in `analysis_grain.py`,** which runs after step 6 and reads §9's audit tables
+# rather than re-deriving them. They used to sit at the end of this file, which meant reaching
+# them required re-executing §1–10 — re-reading eleven clinical files and *rewriting the
+# sex-update files step 1 had already consumed*, with nothing checking they still matched.
+# The section numbers are unchanged so every cross-reference in `HANDOFF.md`, `config.sh` and
+# `scripts/` still resolves; only the file they live in moved. §12a keeps its number because it
+# is the grain's other half, even though it runs on this side of the round trip.
 #
 # Five cohorts — ROSMAP, Mayo, and MSBB (one AMP-AD harmonized set), AMP-AD Diverse
 # Cohorts, and AMP-PD — across four genotype callsets.
@@ -54,54 +60,16 @@
 # In[3]:
 
 
-from pathlib import Path
-
 import pandas as pd
 
-# Every path below is anchored to this file, so the script runs identically from any
-# working directory and nothing outside this folder is ever read or written. No absolute
-# paths, no environment variables, no cluster paths: to move the analysis, copy the folder.
-PROJECT_ROOT = Path(__file__).resolve().parent
-
-DATA = PROJECT_ROOT / "data"
-OUT = PROJECT_ROOT / "clinical_core_out"
-
-# Per-callset roots. Same names, same layout as config.sh's DIR_* — one vocabulary across
-# the clinical and genotype sides. Note the asymmetry config.sh also documents: the two
-# AMP-AD callsets keep their pgens in pgen/, WB-DWGS in joint_calls/.
-DIR_WGS = DATA / "amp-ad-genomics/WGS_Harmonization"
-DIR_DC = DATA / "amp-ad-genomics/DivCo_HS"
-DIR_WB = DATA / "amp-pd-genomics/WB-DWGS"
-DIR_BR = DATA / "amp-pd-genomics/BR-DSNWGS"
-
-# Clinical metadata — downloaded from Synapse / GCP (provenance at the top of this file).
-AD_META = DIR_WGS / "metadata"
-DIVCO_META = DIR_DC / "metadata"
-AMPPD_META = DATA / "amp-pd-genomics/metadata"
-WB_META = DIR_WB / "metadata"
-BR_META = DIR_BR / "metadata"
-
-# Written by the cluster, rsynced back down into this folder between round trips
-# (see §11, §12, §13). Absent on a fresh copy — those sections skip and say so.
-MERGED = DATA / "merged"
-EXCLUDE_REASONS = MERGED / "relatedness/exclude_reasons.tsv"
-RETAINED_MANIFEST = MERGED / "relatedness/retained_manifest.csv"
-PCA_DIR = MERGED / "by_ancestry_qc"
-
-
-def rel(path):
-    """Display form: a path shown relative to PROJECT_ROOT, so a run's log reads the
-    same on every machine."""
-    return Path(path).relative_to(PROJECT_ROOT)
-
-
-def rd(path, sep=","):
-    """Read everything as stripped strings. Missing stays "" (never NaN) so nulls
-    show up in value_counts and crosstabs instead of being silently dropped."""
-    df = pd.read_csv(path, sep=sep, dtype=str, keep_default_na=False)
-    df.columns = [c.strip() for c in df.columns]
-    return df.apply(lambda s: s.str.strip())
-
+# Paths, readers and the donor-level reconciliation rules live in clinical_common so that this
+# file and analysis_grain.py cannot drift on any of them — the split between the two is only
+# safe if both apply the SAME reconciliation, which is exactly what §12a's self-check verifies.
+from clinical_common import (
+    AD_META, AMPPD_META, DIR_BR, DIR_DC, DIR_WB, DIR_WGS, DIVCO_META,
+    DX_VALUES, OUT, PHENO_VALUES, SEX_VALUES,
+    rd, reconcile, rel,
+)
 
 pd.set_option("display.width", 130)
 
@@ -517,9 +485,6 @@ CALLSETS = [
      "iid": "#IID", "fid": None,   "resolve": resolve_br_dsnwgs},
 ]
 
-# AMP-PD callsets — drives the @amppd / @ampad contrast tags in §13.
-AMPPD_CALLSETS = {"wb_dwgs", "br_dsnwgs"}
-
 GENOME_COLUMNS = ["IID", "source_callset", "individual_id", "source_dataset",
                   "rule", "specimenID", "tissue", "n_rules_hit"]
 
@@ -555,9 +520,8 @@ print(genomes.rule.value_counts().to_string())
 # In[12]:
 
 
-SEX_VALUES = ["0", "1", "2"]
-PHENO_VALUES = ["AD", "PD", "control", "other"]
-DX_VALUES = ["PD", "AD", "MCI", "DLB", "PSP", "control", "other"]
+# SEX_VALUES / PHENO_VALUES / DX_VALUES come from clinical_common — analysis_grain.py checks
+# against the same vocabulary, and a local copy here is how the two would silently diverge.
 
 core_keys = set(zip(core.individual_id, core.source_dataset))
 resolved = genomes[genomes.individual_id != ""]
@@ -675,337 +639,90 @@ for cs in CALLSETS:
 print(f"\nwritten to {rel(OUT)} — step 1 reads them from here directly (config.sh: sex_file)")
 
 
-# ## 11. In ← QC outcomes
+# ## 12a. Out → `sample_annot.csv` — the grain's PC-free half
 #
-# After genetics steps 1–5, every sample has been kept or dropped for a stated reason:
-# genotools per-ancestry QC (call rate, sex-check, heterozygosity), duplicate resolution,
-# or 2nd-degree relatedness pruning. This attaches those outcomes to the clinical table so
-# a loss can be read per cohort and per phenotype arm rather than per callset alone.
+# One row per genome: `IID, source_callset, pheno, dx_detailed`. Same reconciliation as the
+# grain, same `"|"`-joined callset for the fused dual-source samples — the grain simply adds
+# ancestry, sex, the conflict flags and the PCs on top of these columns.
 #
-# Reads two files produced by `05_excludelist.py`:
+# **Why it is a separate file.** Step 6's AF-concordance stage needs exactly `IID →
+# (source_callset, dx_detailed)`: it compares callsets only *within* a (stratum × dx) cell, so
+# disease is held constant and a between-callset frequency gap can only be technical. It never
+# reads a PC. But it used to be handed `analysis_grain.csv`, which cannot exist until §12 has
+# PCs from step 6 — and that produced the apparent cycle `grain ← §12 ← PCs ← step 6` which
+# forced step 6 to run twice with the AF build wedged between the passes.
 #
-# | File | Columns |
-# |---|---|
-# | `exclude_reasons.tsv` | `FID  IID  reason  detail` |
-# | `retained_manifest.csv` | `FID,IID,ancestry,call_rate,dup_cluster_id` |
+# The cycle was an artifact of one CSV carrying two unrelated things. Both columns here are pure
+# clinical output — `source_callset` from §7's crosswalk, `dx_detailed` from §4's reconciliation —
+# and neither needs a single genotype step to have run. Splitting the file splits the dependency,
+# and step 6 collapses to one pass.
 #
-# The picks themselves stay on the genotype side — they are call-rate-driven and operate on
-# KING kinship output. This section consumes them; it does not recompute them.
-
-# In[15]:
-
-
-if not EXCLUDE_REASONS.exists():
-    print(f"SKIPPED — no exclude reasons at {rel(EXCLUDE_REASONS)}")
-    print("Run genetics steps 1-5, then rsync data/merged/relatedness/ down.")
-else:
-    reasons = rd(EXCLUDE_REASONS, sep="\t")
-    retained = rd(RETAINED_MANIFEST)
-
-    outcome = genomes[["IID", "source_callset", "individual_id", "source_dataset"]].copy()
-    outcome = outcome.merge(reasons[["IID", "reason", "detail"]], on="IID", how="left")
-    outcome = outcome.merge(retained[["IID", "ancestry", "call_rate"]], on="IID", how="left")
-    outcome["reason"] = outcome["reason"].fillna("")
-    outcome["status"] = (outcome.IID.isin(set(retained.IID))
-                         .map({True: "retained", False: "dropped"}))
-
-    labs = core.set_index(["individual_id", "source_dataset"])[["pheno", "dx_detailed"]]
-    outcome = outcome.join(labs, on=["individual_id", "source_dataset"])
-    outcome[["pheno", "dx_detailed"]] = outcome[["pheno", "dx_detailed"]].fillna("")
-
-    outcome.to_csv(OUT / "qc_outcomes.csv", index=False)
-
-    print("status x callset:")
-    print(pd.crosstab(outcome.source_callset, outcome.status, margins=True).to_string())
-    print("\ndrop reason x callset:")
-    print(pd.crosstab(outcome.loc[outcome.status == "dropped", "reason"],
-                      outcome.loc[outcome.status == "dropped", "source_callset"],
-                      margins=True).to_string())
-    print("\nretained genomes by phenotype arm:")
-    print(pd.crosstab(outcome.loc[outcome.status == "retained", "pheno"].replace("", "(null)"),
-                      outcome.loc[outcome.status == "retained", "source_callset"],
-                      margins=True).to_string())
-    print(f"\nqc_outcomes.csv  {len(outcome):,} rows -> {rel(OUT)}")
-
-
-# ## 12. In ← ancestry and PCs → the analysis grain
+# This section therefore runs **unconditionally**, before any genotype step, unlike §11–13.
 #
-# One row per retained genome, carrying the label the GWAS tests and the covariates it
-# adjusts for. Joins the retained manifest, the per-ancestry PCs from step 6, the genome
-# crosswalk from §7, and the donor table from §6.
-#
-# **Why reconciliation is needed.** A donor can appear in two source studies — once in
-# Diverse Cohorts and once in the ROSMAP/Mayo/MSBB trio — phenotyped by two different
-# programs that do not always agree. The grain is per genome, so each genome needs one label.
-#
-# | Field | Rule |
-# |---|---|
-# | `pheno` | agree → that value; exactly one labelled → the labelled one; both labelled and differing → **AD-dominant** (either says AD → AD), else the non-control label |
-# | `dx_detailed` | pinned to `AD` when reconciled `pheno` is AD; otherwise prefer the trio's clinical instrument, falling back to Diverse Cohorts when the trio is null |
-# | `sex` | each genome takes **its own callset's** donor's sex — never reconciled |
-#
-# AD dominates because the AD label is neuropathological (§3) and a pathology call outranks
-# a clinical one. `sex` is deliberately not reconciled: it is a property of the sequenced
-# sample, and disagreement is evidence of a sample swap worth keeping as a flag.
-#
-# Conflicts are flagged, never dropped — `pheno_conflict`, `dx_conflict`, `sex_conflict`
-# travel with the row so a sensitivity analysis can exclude them without rebuilding.
-
-# In[16]:
-
-
-DIVCO = "amp_ad_divco"
-TRIO = {"amp_ad_msbb", "amp_ad_mayo", "amp_ad_rosmap"}
-
-
-def reconcile_pheno(d, t):
-    """Diverse Cohorts label vs trio label (each a value or "") -> (reconciled, conflict?)."""
-    if d == t or not d or not t:      # agree, or only one of them is labelled
-        return (d or t), False
-    if "AD" in (d, t):                # AD-dominant: neuropathology outranks clinical
-        return "AD", True
-    non_control = {d, t} - {"control"}
-    if "control" in (d, t) and len(non_control) == 1:
-        return non_control.pop(), True
-    return t, True                    # not observed in the data; deterministic + flagged
-
-
-def reconcile_dx(dx_d, dx_t, pheno):
-    """Pin to AD when pheno is AD, else prefer the trio, falling back to Diverse Cohorts."""
-    conflict = bool(dx_d and dx_t and dx_d != dx_t)
-    if pheno == "AD":
-        return "AD", conflict
-    return (dx_t or dx_d), conflict
-
-
-def reconcile(rows):
-    """Core rows for one donor -> (pheno, dx_detailed, pheno_conflict, dx_conflict)."""
-    if len(rows) == 1:
-        return rows[0]["pheno"], rows[0]["dx_detailed"], False, False
-    dvc = next((r for r in rows if r["source_dataset"] == DIVCO), None)
-    tri = next((r for r in rows if r["source_dataset"] in TRIO), None)
-    if not (dvc and tri):             # >1 row but not the divco+trio pattern — not observed
-        first = next((r for r in rows if r["pheno"]), rows[0])
-        return first["pheno"], first["dx_detailed"], False, False
-    pheno, pconf = reconcile_pheno(dvc["pheno"], tri["pheno"])
-    dx, dconf = reconcile_dx(dvc["dx_detailed"], tri["dx_detailed"], pheno)
-    return pheno, dx, pconf, dconf
-
+# The self-check below is the regression test for the split: where a grain already exists, every
+# IID it shares with this file must agree on both columns. A disagreement means the two
+# reconciliation paths have drifted and the exclusion list would change for a reason that has
+# nothing to do with the genotypes.
 
 # In[17]:
 
 
-eigenvecs = sorted(PCA_DIR.glob("cohort_*_pca.eigenvec")) if PCA_DIR.exists() else []
+by_genome_annot = {}
+for r in genomes.itertuples():
+    by_genome_annot.setdefault(r.IID, []).append(r)
 
-if not RETAINED_MANIFEST.exists() or not eigenvecs:
-    print(f"SKIPPED — need {rel(RETAINED_MANIFEST)} and {rel(PCA_DIR)}/cohort_*_pca.eigenvec")
-    print("Run genetics steps 1-6, then rsync data/merged/ down.")
-else:
-    pcs = pd.concat([rd(f, sep=r"\s+") for f in eigenvecs], ignore_index=True)
-    pcs = pcs.rename(columns={"#FID": "FID"})
-    pc_cols = [c for c in pcs.columns if c.upper().startswith("PC")][:10]
+by_donor_annot = {}
+for r in core.to_dict("records"):
+    by_donor_annot.setdefault(r["individual_id"], []).append(r)
 
-    manifest = rd(RETAINED_MANIFEST).merge(pcs[["IID"] + pc_cols], on="IID", how="left")
+annot_rows = []
+for iid, hits in by_genome_annot.items():
+    donor = next((h.individual_id for h in hits if h.individual_id), "")
+    rows = by_donor_annot.get(donor, []) if donor else []
+    pheno, dx, _, _ = reconcile(rows) if rows else ("", "", False, False)
+    annot_rows.append({
+        "IID": iid,
+        "source_callset": "|".join(sorted({h.source_callset for h in hits})),
+        "pheno": pheno,
+        "dx_detailed": dx})
 
-    # donor -> their core rows (a donor in two cohorts has two)
-    by_donor = {}
-    for r in core.to_dict("records"):
-        by_donor.setdefault(r["individual_id"], []).append(r)
+annot = pd.DataFrame(annot_rows)[["IID", "source_callset", "pheno", "dx_detailed"]]
+annot = annot.sort_values("IID").reset_index(drop=True)
+annot.to_csv(OUT / "sample_annot.csv", index=False)
 
-    # genome -> every (donor, cohort, callset) it resolved to.  A list, not a single row:
-    # the same IID exists in both divco_hs and wgs_harm for the fused dual-source samples.
-    by_genome = {}
-    for r in genomes.itertuples():
-        by_genome.setdefault(r.IID, []).append(r)
+print(f"sample_annot.csv  {len(annot):,} genomes -> {rel(OUT)}")
+print("\ndx_detailed x source_callset:")
+print(pd.crosstab(annot.dx_detailed.replace("", "(null)"),
+                  annot.source_callset, margins=True).to_string())
 
-    grain_rows = []
-    for m in manifest.to_dict("records"):
-        hits = by_genome.get(m["IID"], [])
-        donor = next((h.individual_id for h in hits if h.individual_id), "")
-        rows = by_donor.get(donor, []) if donor else []
+# The powered cells are the ones the AF filter can actually use: >=100 per callset within a
+# (stratum x dx) cell. Stratum is not known here — it is set by which step-6 fileset a sample
+# lands in — so this is an upper bound, printed to show which comparisons are even in play.
+print("\ncells with >=100 genomes per callset (upper bound — stratum splits these further):")
+_pairs = (annot[annot.dx_detailed != ""].groupby(["dx_detailed", "source_callset"]).size())
+for dx_v, grp in _pairs.groupby(level=0):
+    powered = [f"{cs}={n:,}" for (_, cs), n in grp.items() if n >= 100]
+    if len(powered) >= 2:
+        print(f"    {dx_v:10} {', '.join(powered)}")
 
-        pheno, dx, pconf, dconf = reconcile(rows) if rows else ("", "", False, False)
-
-        # sex comes from the cohort(s) THIS genome resolved to, not the reconciliation
-        own_cohorts = {h.source_dataset for h in hits}
-        own_sex = {r["sex"] for r in rows if r["source_dataset"] in own_cohorts
-                   and r["sex"] in ("1", "2")}
-        sex = sorted(own_sex)[0] if own_sex else ""
-        sconf = len(own_sex) > 1
-
-        grain_rows.append({
-            "IID": m["IID"], "individual_id": donor,
-            "source_callset": "|".join(sorted({h.source_callset for h in hits}))
-                              or m.get("source_callset", ""),
-            "ancestry": m["ancestry"], "sex": sex, "pheno": pheno, "dx_detailed": dx,
-            "pheno_conflict": int(pconf), "dx_conflict": int(dconf), "sex_conflict": int(sconf),
-            "call_rate": m.get("call_rate", ""), "dup_cluster_id": m.get("dup_cluster_id", ""),
-            **{c: m.get(c, "") for c in pc_cols}})
-
-    GRAIN_COLUMNS = ["IID", "individual_id", "source_callset", "ancestry", "sex", "pheno",
-                     "dx_detailed", "pheno_conflict", "dx_conflict", "sex_conflict",
-                     "call_rate", "dup_cluster_id"] + pc_cols
-    grain = pd.DataFrame(grain_rows)[GRAIN_COLUMNS]
-    grain.to_csv(OUT / "analysis_grain.csv", index=False)
-
-    print(f"retained genomes: {len(grain):,}")
-    print(f"  no donor resolved:  {int((grain.individual_id == '').sum()):,}")
-    print(f"  pheno conflicts:    {int(grain.pheno_conflict.sum()):,}")
-    print(f"  dx conflicts:       {int(grain.dx_conflict.sum()):,}")
-    print(f"  sex conflicts:      {int(grain.sex_conflict.sum()):,}")
-    print(f"  missing PCs:        {int((grain[pc_cols[0]] == '').sum()):,} (sub-50-sample strata)")
-    print("\ndx_detailed x ancestry:")
-    print(pd.crosstab(grain.dx_detailed.replace("", "(null)"), grain.ancestry,
-                      margins=True).to_string())
-    print(f"\nanalysis_grain.csv  {len(grain):,} rows x {len(GRAIN_COLUMNS)} cols -> {rel(OUT)}")
-
-
-# ## 13. Out → phenotype, covariate, and contrast-manifest files
-#
-# Everything `07_gwas.sh` needs. **This section is the sole definition of who is a case.**
-# Step 7 reads these files and runs `plink2 --glm`; it does not parse the grain and does not
-# rebuild an arm in awk, so the definition exists once and cannot drift between the two.
-#
-# | File | Format |
-# |---|---|
-# | `covar_<ANC>.txt` | `#FID IID SEX [AGE] PC1..PC10`, missing as `NA` |
-# | `pheno_<ANC>_<CASE>_vs_<CTRL>.txt` | `#FID IID pheno`, case=2 control=1 |
-# | `contrasts.csv` | one row per written contrast: arm sizes, cohort composition, confound tag |
-#
-# **FID comes from the genotype fileset**, not the grain: plink2 matches on FID+IID and
-# defaults a missing FID to `0`, so the AMP-PD callsets — which carry a non-zero FID — need
-# their real one. `cohort_<ANC>_qc.fam` therefore has to exist alongside the PCs.
-#
-# A contrast arm may be restricted by source: `control@amppd` means AMP-PD callsets only
-# (`wb_dwgs` or `br_dsnwgs`), `@ampad` the rest. Bare arms take any source. Both arms must
-# reach `MIN_ARM` for a file to be written.
-#
-# **The confound tag** measures how far apart the two arms are in AMP-PD share. The primary
-# contrast is confounded with callset by construction — AMP-AD supplies the AD cases, AMP-PD
-# the PD cases — so `delta_amppd` is the number that says how much of a result could be
-# cohort rather than disease. It is computed here, off `AMPPD_CALLSETS`, so adding a callset
-# updates it in one place.
-#
-# **`EXCLUDE_DUAL`** drops the samples that resolved to both `divco_hs` and `wgs_harm`, for a
-# WGS_Harm-only sensitivity run. It lives here rather than as a flag at GWAS time so that the
-# sensitivity variant is a recorded artifact you can point at, not a switch someone remembers.
-
-# In[18]:
-
-
-CONTRASTS = [
-    ("PD", "AD"), ("PD", "DLB"), ("PD", "MCI"), ("PD", "PSP"), ("PD", "control"), ("PD", "other"),
-    ("AD", "MCI"), ("AD", "DLB"), ("AD", "PSP"), ("AD", "control"), ("AD", "other"),
-    ("control@amppd", "control@ampad"), ("PD@amppd", "control@amppd"), ("AD@ampad", "control@ampad"),
-]
-MIN_ARM = 20
-FAM_DIR = PCA_DIR          # cohort_<ANC>_qc.fam lives beside the eigenvecs
-
-DUAL_CALLSET = "divco_hs|wgs_harm"   # §12 joins multi-callset genomes with "|"
-EXCLUDE_DUAL = False                 # True -> WGS_Harm-only sensitivity variant
-
-# Age is the dominant confounder for both AD and PD, and the grain does not carry it yet:
-# AMP-AD records age-at-death, AMP-PD age-at-baseline, and they are not the same variable.
-# Emitted into covar the moment a harmonized column appears, so step 7 needs no change.
-AGE_COLUMNS = ("age", "age_analysis", "agedeath", "age_death", "age_baseline", "age_cov")
-
-
-def arm_mask(g, arm):
-    """'AD@ampad' -> rows with dx_detailed == AD from a non-AMP-PD callset."""
-    dx, _, src = arm.partition("@")
-    m = g.dx_detailed == dx
-    if src == "amppd":
-        return m & g.source_callset.isin(AMPPD_CALLSETS)
-    if src == "ampad":
-        return m & ~g.source_callset.isin(AMPPD_CALLSETS)
-    return m
-
-
-def amppd_pct(g, mask):
-    """Share of an arm that came from an AMP-PD callset. Drives the confound tag."""
-    n = int(mask.sum())
-    if not n:
-        return float("nan")
-    return 100.0 * int((mask & g.source_callset.isin(AMPPD_CALLSETS)).sum()) / n
-
-
-def confound_tag(delta):
-    """<=20pp apart -> the arms share a cohort base; >=70pp -> they are effectively disjoint."""
-    if pd.isna(delta):
-        return "NA"
-    return "within_cohort" if delta <= 20 else ("cross_cohort" if delta >= 70 else "partial")
-
-
-if "grain" not in globals():
-    print("SKIPPED — §12 has not produced a grain yet.")
-else:
-    PHENO_DIR = OUT / "pheno"
-    COVAR_DIR = OUT / "covar"
-    PHENO_DIR.mkdir(parents=True, exist_ok=True)
-    COVAR_DIR.mkdir(parents=True, exist_ok=True)
-
-    age_col = next((c for c in grain.columns if c.strip().lower() in AGE_COLUMNS), None)
-    print(f"age covariate: {age_col or 'NOT FOUND in grain — running WITHOUT age'}")
-    if EXCLUDE_DUAL:
-        print(f"EXCLUDE_DUAL on — dropping source_callset == {DUAL_CALLSET!r}")
-
-    written = []
-    for anc, g in grain.groupby("ancestry"):
-        fam = FAM_DIR / f"cohort_{anc}_qc.fam"
-        if not fam.exists():
-            print(f"{anc:5} SKIPPED — no {fam.name}")
-            continue
-        if EXCLUDE_DUAL:
-            g = g[g.source_callset != DUAL_CALLSET]
-        # .fam is headerless: FID IID PAT MAT SEX PHENO
-        f = pd.read_csv(fam, sep=r"\s+", dtype=str, header=None, usecols=[0, 1])
-        fid = dict(zip(f[1], f[0]))
-        g = g.assign(FID=g.IID.map(lambda i: fid.get(i, "0")))
-
-        cov_cols = ["FID", "IID", "sex"] + ([age_col] if age_col else []) + pc_cols
-        cov_names = ["#FID", "IID", "SEX"] + (["AGE"] if age_col else []) + pc_cols
-        covar = g[cov_cols].replace("", "NA")
-        covar.columns = cov_names
-        covar.to_csv(COVAR_DIR / f"covar_{anc}.txt", sep="\t", index=False)
-
-        for case, ctrl in CONTRASTS:
-            cm, km = arm_mask(g, case), arm_mask(g, ctrl)
-            if cm.sum() < MIN_ARM or km.sum() < MIN_ARM:
-                continue
-            tag = f"{case}_vs_{ctrl}".replace("@", "_")
-            out = pd.concat([
-                g.loc[cm, ["FID", "IID"]].assign(pheno="2"),
-                g.loc[km, ["FID", "IID"]].assign(pheno="1")])
-            out.columns = ["#FID", "IID", "pheno"]
-            out.to_csv(PHENO_DIR / f"pheno_{anc}_{tag}.txt", sep="\t", index=False)
-
-            n_case, n_ctrl = int(cm.sum()), int(km.sum())
-            case_pct, ctrl_pct = amppd_pct(g, cm), amppd_pct(g, km)
-            delta = abs(case_pct - ctrl_pct)
-            written.append({
-                "ancestry": anc, "contrast": tag, "case_arm": case, "ctrl_arm": ctrl,
-                "n_case": n_case, "n_ctrl": n_ctrl,
-                "case_pct_amppd": round(case_pct, 1), "ctrl_pct_amppd": round(ctrl_pct, 1),
-                "delta_amppd": round(delta, 1), "confound_tag": confound_tag(delta),
-                "viable_ge100": int(n_case >= 100 and n_ctrl >= 100)})
-
-    if written:
-        w = pd.DataFrame(written).sort_values(["ancestry", "contrast"], ignore_index=True)
-        # The manifest step 7 loops over. Carrying the arm sizes and cohort composition here
-        # means step 7 never has to re-derive an arm to report on it.
-        w.to_csv(OUT / "contrasts.csv", index=False)
-        print(w.to_string(index=False))
-        print(f"\n{len(w)} phenotype files + {w.ancestry.nunique()} covariate files "
-              f"+ contrasts.csv -> {rel(OUT)}")
-        print(f"viable at >=100 per arm: {int(w.viable_ge100.sum())}")
-        print("confound tag: " + "  ".join(f"{k}={v}" for k, v in
-                                           w.confound_tag.value_counts().items()))
+# ── regression check against the grain, where one exists ──
+_grain_path = OUT / "analysis_grain.csv"
+if _grain_path.exists():
+    _g = pd.read_csv(_grain_path, dtype=str, keep_default_na=False)
+    _cmp = _g[["IID", "source_callset", "dx_detailed"]].merge(
+        annot[["IID", "source_callset", "dx_detailed"]], on="IID",
+        how="left", suffixes=("_grain", "_annot"), indicator=True)
+    _missing = int((_cmp._merge == "left_only").sum())
+    _both = _cmp[_cmp._merge == "both"]
+    _d_cs = int((_both.source_callset_grain != _both.source_callset_annot).sum())
+    _d_dx = int((_both.dx_detailed_grain != _both.dx_detailed_annot).sum())
+    print(f"\nvs analysis_grain.csv: {len(_both):,} shared IIDs, "
+          f"{_d_cs} callset mismatches, {_d_dx} dx mismatches, {_missing} grain IIDs absent here")
+    if _d_cs or _d_dx or _missing:
+        print("  !! The two reconciliation paths DISAGREE. Step 6's exclusion list would change")
+        print("     for a non-genotype reason — investigate before submitting step 6.")
     else:
-        print("no contrast reached MIN_ARM in any ancestry")
-        pd.DataFrame(columns=[
-            "ancestry", "contrast", "case_arm", "ctrl_arm", "n_case", "n_ctrl",
-            "case_pct_amppd", "ctrl_pct_amppd", "delta_amppd", "confound_tag",
-            "viable_ge100"]).to_csv(OUT / "contrasts.csv", index=False)
+        print("  identical on both columns — the AF build is unaffected by the split")
 
 
 # ## 14. Appendix — how much of the AD arm is definition-dependent?
@@ -1035,7 +752,7 @@ else:
 # Mayo donors. That is a power argument for a sensitivity arm, not a reason to redefine the
 # primary phenotype.
 
-# In[19]:
+# In[20]:
 
 
 AD_SOURCES = ["amp_ad_rosmap", "amp_ad_mayo", "amp_ad_msbb", "amp_ad_divco"]
@@ -1051,7 +768,7 @@ for src in AD_SOURCES:
     print()
 
 
-# In[20]:
+# In[21]:
 
 
 # One explicit "AD by the alternative instrument" call per cohort. Each mapping is a
@@ -1115,7 +832,7 @@ print(f"\ntotal AD genomes: derived={tot_d:,}  alternative={tot_a:,}  "
 # of both arms. Counting null *donors* overstates it — a donor with no genome contributes
 # nothing to a GWAS either way. The cell below counts both, and the gap is the point.
 
-# In[21]:
+# In[22]:
 
 
 ad = core[core.source_dataset.isin(AD_SOURCES)].copy()
@@ -1140,7 +857,7 @@ print(f"  {n_geno:,} / {tot_geno:,} genomes ({n_geno/tot_geno:.1%})   <- the num
 # genome-carrying donors with a null `pheno` and asks what its alternative column says
 # about them: how many become classifiable, and into which arm.
 
-# In[22]:
+# In[23]:
 
 
 recovery = []

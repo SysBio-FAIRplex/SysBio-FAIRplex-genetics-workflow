@@ -6,14 +6,26 @@
 #SBATCH --mem=48G
 #SBATCH --partition=norm
 #
-# STEP 6a — build the per-callset AF-concordance exclusion list that step 6 then applies.
+# Build the per-callset AF-concordance exclusion list.
 #
-# Runs on step 6's EXISTING output, so it needs no re-run to produce the list. Two stages, unioned:
+# ─────────────────────────────────────────────────────────────────────────────
+# YOU PROBABLY DO NOT NEED TO SUBMIT THIS. Step 6 runs it as stage B, in-job, between its
+# unfiltered QC and the filtered association set. That is the supported path and it is a single
+# submission. This wrapper survives for one purpose: re-deriving the list at DIFFERENT knobs
+# (THRESH, ZMIN, MIN_CELL, HWE, MISHAP) against an existing stage-A output, without paying for
+# another scan of cohort_merged. Having tuned them, re-run step 6 with SKIP_AF_BUILD=1 to apply
+# the result.
+#
+# The file was formerly numbered 06a, and the ORDER block here used to read "run this, then run
+# step 6 again". Both encoded a two-pass pipeline that no longer exists — see the header of
+# 06_ancestry_qc.sh for why the ordering it was built around was never actually circular.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Three stages, unioned:
 #   1. AF concordance — callsets compared only WITHIN a (stratum x dx) cell, which holds disease
 #      constant and is what keeps a genome-wide frequency filter from deleting APOE.
-#   2. Per-callset HWE among controls — GenoTools' `hwe` step at its own threshold. Lives here
-#      rather than in step 6 because it needs the grain for control labels, and step 6 cannot
-#      depend on the grain without a circular ordering (grain <- §12 <- manifest <- step 6).
+#   2. Per-callset HWE among controls — GenoTools' `hwe` step at its own threshold. It needs the
+#      per-sample control label, which is why this is a separate stage from step 6's pooled HWE.
 #   3. Per-callset haplotype missingness — GenoTools' `haplotype` step. OFF by default (MISHAP=0).
 # See the docstring in af_concordance_build.py.
 #
@@ -21,18 +33,15 @@
 # step, which step 7 already covers per contrast with a stricter rule (chi-square AND a minimum
 # |F_MISS| difference, vs the demo's single global p<0.01 pass).
 #
-# ORDER:
-#   1. ./submit.sh scripts/af_concordance_build.sh        <- this, on the CURRENT step-6 output
-#   2. read the BY CALLSET PAIR table + the sentinel-loci tripwire in the log
-#   3. ./submit.sh scripts/06_ancestry_qc.sh            <- picks the list up automatically
-#   4. notebook §12 (PCs changed -> the grain must be rebuilt)
-#   5. ./submit.sh scripts/07_gwas.sh
+# INPUT IS THE UNFILTERED FILESET, and that is load-bearing: deriving the list from a directory
+# with a previous list already applied would pre-filter this filter's own input, and the result
+# would look clean whether or not it was.
 #
 # Knobs: THRESH (0.05) · ZMIN (5.0) · MIN_CELL (100) · DISC_RATE (0.50) · ANCS · DXS
 #        HWE (1e-4, 0 disables) · MIN_HWE_CONTROLS (50) · HWE_BOTH_TAILS (unset)
 #        MISHAP (0 = off; set 1e-4 to enable) · MIN_MISHAP (100)
 #
-# GUARDRAIL: sbatch script, run by the USER (it reads the id-bearing grain and genotypes).
+# GUARDRAIL: sbatch script, run by the USER (it reads the id-bearing annotation and genotypes).
 # Writes the exclusion list; stdout is aggregate counts and variant IDs only.
 set -o pipefail
 
@@ -40,7 +49,7 @@ set -o pipefail
 BUNDLE="${BUNDLE:-${SLURM_SUBMIT_DIR:-$PWD}}"
 source "${BUNDLE}/config.sh"
 
-QC_DIR=${MERGED_DIR}/by_ancestry_qc
+QC_DIR=${QC_DIR:-${MERGED_DIR}/by_ancestry_qc/unfiltered}
 WORK=${MERGED_DIR}/af_concordance
 OUT=${AF_EXCLUDE:-${MERGED_DIR}/exclude_af_concordance.txt}
 DISC=${DISC:-${MERGED_DIR}/concordance/per_variant_discordance.tsv}
@@ -65,19 +74,19 @@ module load "${MOD_PYTHON}"
 source "${VENV}/bin/activate"
 
 echo "=========================================="
-echo "Step 6a — per-callset AF-concordance exclusion list"
+echo "AF-concordance exclusion list (step 6 stage B, run standalone)"
 echo "Job ${SLURM_JOB_ID} on ${SLURMD_NODENAME}   start $(date)"
-echo "QC dir: ${QC_DIR}"
-echo "Grain:  ${GRAIN}"
+echo "QC dir: ${QC_DIR}   (must be the UNFILTERED generation)"
+echo "Annot:  ${ANNOT}"
 echo "Out:    ${OUT}"
 echo "=========================================="
 
-[[ -f "$GRAIN" ]] || { echo "ERROR: grain not found: $GRAIN (rsync it from local first)" >&2; exit 1; }
-[[ -d "$QC_DIR" ]] || { echo "ERROR: no by_ancestry_qc — run step 6 at least once first" >&2; exit 1; }
+[[ -f "$ANNOT" ]] || { echo "ERROR: sample annot not found: $ANNOT — run clinical_core.py (§12a)" >&2; exit 1; }
+[[ -d "$QC_DIR" ]] || { echo "ERROR: ${QC_DIR} not found — run step 6 (stage A builds it)" >&2; exit 1; }
 
 python3 "${BUNDLE}/scripts/af_concordance_build.py" \
     --qc-dir "${QC_DIR}" \
-    --grain "${GRAIN}" \
+    --annot "${ANNOT}" \
     --out "${OUT}" \
     --work "${WORK}" \
     --thresh "${THRESH}" \

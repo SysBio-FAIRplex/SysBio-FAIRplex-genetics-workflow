@@ -15,7 +15,7 @@ neuropathology**.
 
 Code and data share a root. On biowulf that root is `/data/CARDPB2/sysbio/wgs`; on a laptop it is
 wherever the repo was cloned. **Nothing in this project contains an absolute path** — `config.sh`
-derives the root from its own location, and `clinical_core.py`, `05_excludelist.py` and
+derives the root from its own location, and `clinical_common.py`, `05_excludelist.py` and
 `ancestry_qc_manifest.py` each do the same. To move the project, copy the folder.
 
 That collapses three things that used to be separate and disagree: `WGS_ROOT`, `PROJECT_ROOT`, and
@@ -27,12 +27,16 @@ stale against the run that produced it.
 
 | | |
 |---|---|
-| `clinical_core.py` | goal 1. 5 cohorts, 4 callsets. Reads `data/`, writes `clinical_core_out/`. |
-| `wgs_core.ipynb` | goal 2 orchestrator — ssh/sbatch driver. Complete through step 2. |
+| `clinical_core.py` | goal 1, first half. Runs **once, before step 1**. Reads `data/`, writes `clinical_core_out/`. |
+| `analysis_grain.py` | goal 1, second half — §11-13. Runs **once, after step 6**, on its PCs. |
+| `clinical_common.py` | paths, readers, and the reconciliation rules both halves share. Imported, never run. |
+| `wgs_core.ipynb` | goal 2 orchestrator — ssh/sbatch driver. §3 step 6, §4 the before/after proof. |
 | `config.sh` | every path, derived from its own location. `submit.sh` — sbatch wrapper. |
 | `scripts/00`–`07` | env, genotools, normalize, merge, relatedness, excludelist, ancestry QC, GWAS. |
-| `scripts/ancestry_qc_manifest.py` | step 6 → clinical boundary: `retained_samples_manifest.csv`. |
-| `scripts/gene_annot.py` + `ref/refFlat.txt` | locus coordinates. CLI: `python3 scripts/gene_annot.py CR1 SNCA LRRK2` |
+| `scripts/af_concordance_build.{py,sh}` | step 6 **stage B**, in-job. The `.sh` is for re-tuning knobs only. |
+| `scripts/ancestry_qc_manifest.py` | step 6 stage E: `retained_samples_manifest.csv`, once per generation. |
+| `review/plot_af_filter_effect.py` | the collaborator-facing before/after figure + eta² tables. |
+| `scripts/gene_annot.py` + `ref/refFlat.txt` | **the single source of locus coordinates** — `sentinel_hits()` is imported by `af_concordance_build.py` and `08_ctrl_ctrl_filter.py`; no coordinates are hardcoded anywhere. CLI: `python3 scripts/gene_annot.py CR1 SNCA LRRK2` |
 | `scripts/diag_order.py`, `scripts/diag_cah.sh` | read-only. Variant order vs the panel; postmortem of a genotools output dir. |
 | `review/` | goals 3 and 4: QQ/Manhattan, ctrl-vs-ctrl mask, eta² of callset on each PC. |
 | `data/**/metadata/` | the 11 clinical files `clinical_core.py` opens. Gitignored — controlled access. |
@@ -48,43 +52,108 @@ Everything runs on the cluster, so there are no round trips. **Code reaches the 
 `--delete` cannot express a deletion, renamed or retired scripts must be removed by hand; that
 has caused three separate stale-artifact bugs, so check before assuming.
 
-`clinical_core.py` runs **three** times and step 6 runs **twice**:
+The clinical side runs at two points and step 6 runs **once**:
 
-```
-rsync -av --exclude='logs/' --exclude='__pycache__/' scripts/ helix:$ROOT/scripts/
+```bash
+# BOTH lines. The clinical side lives at the project ROOT, not under scripts/ — an rsync of
+# scripts/ alone silently leaves the cluster on the old single-file clinical_core.py.
+# The host is the FQDN: there is no `helix` ssh alias, so a bare `helix:` fails to resolve.
+# Transfers go through helix, never biowulf (scp to biowulf fails — PROJECT_LOG 2026-08-11).
+ROOT=/data/CARDPB2/sysbio/wgs
+rsync -av --exclude='logs/' --exclude='__pycache__/' scripts/ helix.nih.gov:$ROOT/scripts/
+rsync -av clinical_common.py clinical_core.py analysis_grain.py config.sh helix.nih.gov:$ROOT/
+
+cd /data/CARDPB2/sysbio/wgs && source config.sh
 
 module load python/3.11 && source .venv/bin/activate   # NOT the system Anaconda py3.9
-python3 clinical_core.py                  # §1-10 -> *_update_sex.txt   (§11-13 SKIP)
+python3 clinical_core.py                  # §1-10  -> *_update_sex.txt
+                                          # §12a   -> sample_annot.csv
 
-./submit.sh scripts/01_genotools.sh ...   # once per callset; reads the sex files in place
-./submit.sh scripts/02_normalize.sh ...   # once per callset
+# 0. VCF -> pgen. BR-DSNWGS only; the other three shipped as pgen or were built earlier.
+#    NO SCRIPT — this ran as notebook cells, and these two commands are the whole record.
+#    --sort-vars is not optional: see "Blocker 2" below.
+bcftools view --apply-filters 'PASS,.' --min-alleles 2 --max-alleles 2 --type snps \
+    $DIR_BR/joint_calls/AMPPD_postmortem_joint_gt_call_97donors.vcf.gz \
+  | bcftools annotate --set-id '%CHROM:%POS:%REF:%ALT' \
+  | bgzip -@ 8 > $DIR_BR/pgen/intermediate/br_dsnwgs_filtered.vcf.gz
+plink2 --vcf $DIR_BR/pgen/intermediate/br_dsnwgs_filtered.vcf.gz \
+    --chr 1-22,X,Y --split-par hg38 --update-sex placeholder_sex.txt \
+    --make-pgen --out $RAW_BR
+
+# 1. genotools — once per callset. Reads the sex files in place from clinical_core_out/.
+./submit.sh scripts/01_genotools.sh --job-name=genotools_wgs_harm \
+  --export=PGEN=$RAW_WGS,SEX_FILE=$(sex_file wgs_harm),OUT_DIR=$DIR_WGS/genotools,DATASET=wgs_harm
+./submit.sh scripts/01_genotools.sh --job-name=genotools_divco_hs \
+  --export=PGEN=$RAW_DC,SEX_FILE=$(sex_file divco_hs),OUT_DIR=$DIR_DC/genotools,DATASET=divco_hs
+./submit.sh scripts/01_genotools.sh --job-name=genotools_wb_dwgs \
+  --export=PGEN=$RAW_WB,SEX_FILE=$(sex_file wb_dwgs),OUT_DIR=$DIR_WB/genotools,DATASET=wb_dwgs
+./submit.sh scripts/01_genotools.sh --job-name=genotools_br_dsnwgs \
+  --export=PGEN=$RAW_BR,SEX_FILE=$(sex_file br_dsnwgs),OUT_DIR=$DIR_BR/genotools,DATASET=br_dsnwgs
+
+# 2. normalize — once per callset.
+./submit.sh scripts/02_normalize.sh --job-name=norm_wgs --export=PFILE=$PF_WGS,OUT=$NORM_WGS,TAG=wgs
+./submit.sh scripts/02_normalize.sh --job-name=norm_dc  --export=PFILE=$PF_DC,OUT=$NORM_DC,TAG=dc
+./submit.sh scripts/02_normalize.sh --job-name=norm_wb  --export=PFILE=$PF_WB,OUT=$NORM_WB,TAG=wb
+./submit.sh scripts/02_normalize.sh --job-name=norm_br  --export=PFILE=$PF_BR,OUT=$NORM_BR,TAG=br
+
 ./submit.sh scripts/03_merge.sh           # all four -> cohort_merged
 ./submit.sh scripts/04_relatedness.sh     # KING, report-only
 ./submit.sh scripts/05_excludelist.sh     # -> retained_manifest.csv
-./submit.sh scripts/06_ancestry_qc.sh     # PASS 1, unfiltered
-python3 scripts/ancestry_qc_manifest.py   # -> retained_samples_manifest.csv (NOT called by 06)
-python3 clinical_core.py                  # §11-13 -> analysis_grain.csv
+./submit.sh scripts/06_ancestry_qc.sh     # A unfiltered QC+PCA · B build AF list · C apply
+                                          # D filtered QC+PCA   · E both manifests
+python3 analysis_grain.py                 # §11-13 -> analysis_grain.csv on the new PCs
 
-python3 review/plot_pcs_by_callset.py --manifest <manifest>   # eta^2: is the AF filter needed?
-./submit.sh scripts/af_concordance_build.sh # -> exclude_af_concordance.txt (needs $GRAIN)
-./submit.sh scripts/06_ancestry_qc.sh     # PASS 2, picks the list up automatically
-python3 scripts/ancestry_qc_manifest.py   # PCs changed
-python3 clinical_core.py                  # grain must be rebuilt on the new PCs
+# the proof the filter works — reads both manifests step 6 wrote in that one job.
+# Runs LOCALLY in practice (notebook §4 rsyncs the two manifests down first); it needs no
+# genotypes, only the manifests, so either machine works.
+python3 review/plot_af_filter_effect.py \
+    --before $MERGED_DIR/by_ancestry_qc/unfiltered/retained_samples_manifest.csv \
+    --after  $MERGED_DIR/by_ancestry_qc/retained_samples_manifest.csv
 
 ./submit.sh scripts/07_gwas.sh            # reads $GRAIN from clinical_core_out/
 python3 review/plot_gwas.py               # + mask_cohort_artifacts.py
+./submit.sh scripts/08_ctrl_ctrl_filter.sh   # annotates; never subtracts (see known issue 2)
 ```
 
-**The two-pass shape is forced, not stylistic:** `af_concordance_build` needs step 6's
-`by_ancestry_qc` output *and* the grain, and step 6 cannot depend on the grain without a circular
-ordering (grain ← §12 ← manifest ← step 6). Step 6 refuses an exclusion list older than
-`cohort_merged.bed`, so a stale one now fails fast instead of being applied silently.
+**Two clinical invocations, and unlike step 6's two passes this one is real.** Step 1 applies the
+sex files; the grain carries step 6's PCs because step 7 reads them as covariates. There is no
+column to split out. What changed is that they are now two *files* rather than one script run
+twice — `analysis_grain.py` reads §9's audit tables instead of re-deriving them, so it no longer
+rewrites the sex files step 1 already consumed. Section numbers are unchanged.
+
+**Step 6 used to run twice, and the reason was wrong.** The claimed cycle was
+`grain ← §12 ← manifest ← step 6`, so step 6 could not depend on the grain. But
+`af_concordance_build` reads exactly `IID → (source_callset, dx_detailed)` — it never reads a PC,
+and it never reads ancestry either, because the stratum comes from which fileset a sample is in.
+Both fields are pure clinical output, so §12a now writes them as `sample_annot.csv` before step 1
+runs. Separately, `--geno/--maf/--hwe` are per-variant on a fixed sample set and therefore
+**commute with `--exclude`**, so pass 2 never needed to re-scan `cohort_merged` at all — stage C
+applies the list to stage A's output instead. See the header of `scripts/06_ancestry_qc.sh`.
+
+The stale-list guard is now structural rather than a check: stage B rebuilds the list inside the
+job from this merge. The mtime refusal survives only on the `SKIP_AF_BUILD=1` path, which is the
+one way a list this job did not build can still reach stage C.
 
 ## Status
 
-**All four callsets are through step 6 pass 1, and the grain is rebuilt.** `cohort_merged` is
-172,497,055 variants × 13,334 samples (job 27429821); `analysis_grain.csv` is 12,495 rows × 22 cols,
-built 2026-08-18 from the current manifest.
+**Step 6 has RUN as a single pass and the grain is rebuilt on its PCs.** `cohort_merged` is
+172,497,055 variants × 13,334 samples (job 27429821); step 6 is job **27857727** (2026-08-20,
+7m13s — all 11 strata reused stage A, so the merge was never re-scanned); `analysis_grain.csv` is
+12,495 rows × 22 cols, 17 viable contrasts, built 2026-08-20 on the filtered PCs.
+
+**Both regression tests for the refactor passed.** Stage B rebuilt the exclusion list through
+`sample_annot.csv` and got 4,415 variants — the same count job 27697096 got through the grain — and
+§12a reports 12,495 shared IIDs with 0 callset and 0 dx mismatches.
+
+**The BR-DSNWGS grain item is CLOSED.** The 95 retained BR samples are 76 EUR / 13 AJ / 3 AMR /
+1 AAC / 1 AFR / 1 CAH. The old 19 AFR / 67 EUR rows are gone.
+
+**AJ is closed on power and design, not on eta².** `AJ/AD` is 97 (`wgs_harm`=95 + `divco_hs`=2),
+under the 100 floor, so AJ cannot field the primary AD-vs-PD contrast at all. Its three viable
+contrasts are all `within_cohort` — ~96% `wb_dwgs` on both arms — and callset↔phenotype
+collinearity cannot bias a contrast whose arms share a callset. The unsolved 0.962 has no
+downstream consumer. The sub-continental-structure hypothesis is still untested and no longer
+blocks anything.
 
 | Step | state |
 |---|---|
@@ -94,14 +163,30 @@ built 2026-08-18 from the current manifest.
 | 3 merge | done — 97/97 BR in, variant arithmetic closes exactly |
 | 4 relatedness | done — 13,334/13,334 labelled, 11 strata |
 | 5 excludelist | done — **12,495 retained** (839 excluded), 95/97 BR |
-| 6 ancestry QC **pass 1** | done unfiltered, job 27602590 — 6 of 11 strata have PCs |
+| 6 ancestry QC, unfiltered | done, job 27602590 — 6 of 11 strata have PCs. **This is now stage A's output** |
 | `ancestry_qc_manifest.py` | done — 12,495-row `retained_samples_manifest.csv` |
-| `clinical_core.py` §11–13 | done 2026-08-18 — grain rebuilt, 17 of 44 contrasts viable |
-| `af_concordance_build.sh` | done 2026-08-18, job 27697096 — **4,415 variants**, correct grain |
+| §11–13 (now `analysis_grain.py`) | done 2026-08-18 — grain rebuilt, 17 of 44 contrasts viable |
+| `af_concordance_build` | done 2026-08-18, job 27697096 — **4,415 variants**, correct grain |
 | premise test (eta² before/after) | done 2026-08-19 — **EUR 0.757 → 0.036; AJ 0.984 → 0.962** |
-| 6 ancestry QC **pass 2** | next — `mv by_ancestry_qc` FIRST (one-way door), then submit |
-| `clinical_core.py` again | then — PCs change, so the grain must be rebuilt |
-| 7 GWAS | after that |
+| step 6 rebuilt as ONE pass | done 2026-08-19, **RUN 2026-08-20** — job 27857727, 7m13s |
+| clinical side split in two | done 2026-08-19, **RUN 2026-08-20** — §12a self-check 0 mismatches |
+| 6 ancestry QC, single pass | **done** — job 27857727. Stage B rebuilt 4,415 (matches 27697096) |
+| `analysis_grain.py` | **done 2026-08-20** — 12,495 rows × 22 cols, 17 viable, BR fixed |
+| sentinel wired to `gene_annot` | done 2026-08-20 — hardcoded tables deleted from both scripts |
+| HWE excess-over-chance gate | **open** — see known issue 7; decides the LRRK2 exclusion |
+| 7 GWAS | **next** |
+
+**Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
+the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage
+A's output. Notebook §3 moves it to `by_ancestry_qc/unfiltered/`, step 6's reuse rule picks it up,
+and the ~13-14 min × 11 strata scan is skipped. What actually runs is stage B, the exclusion, and
+the filtered prune+PCA.
+
+**Stage B is the regression test for the split.** It rebuilds the list through `sample_annot.csv`
+instead of the grain. Job 27697096 got 4,415 variants from the grain; the same count means the
+refactor changed nothing. §12a also prints a direct self-check — every IID shared with an existing
+grain must agree on `source_callset` and `dx_detailed`. A disagreement means the exclusion list
+would move for a reason that has nothing to do with genotypes; stop there.
 
 **The filter is warranted, and its effect is now MEASURED rather than cited.** Unfiltered eta² on
 the four-callset cohort: AJ PC1 **0.984**, EUR PC2 **0.757**. Removing BR changes neither
@@ -186,7 +271,7 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
 
 ## Known issues
 
-1. **Two implementations of pheno/covar.** `clinical_core.py` §13 writes
+1. **Two implementations of pheno/covar.** `analysis_grain.py` §13 writes
    `clinical_core_out/{pheno,covar}/`, but `07_gwas.sh` does not read them — it rebuilds both from
    `$GRAIN` in awk. The awk version is what actually runs. Pick one.
 
@@ -204,26 +289,34 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    held constant inside each of its cells; **step 8 may not**, because its control definitions
    differ across programs. Not duplicated reasoning — different entitlements.
 
-3. **Step 6 runs TWICE, with `af_concordance_build.sh` between the passes.** Step 6 reads
-   `$MERGED_DIR/exclude_af_concordance.txt`; `af_concordance_build.{py,sh}` writes it, and needs
-   step 6's `by_ancestry_qc` output plus the grain to do so. Pass 1 therefore runs *without* the
-   exclusion, printing a `NONE` note. That is by design, not a gap — step 6 cannot depend on the
-   grain without a circular ordering (grain ← §12 ← manifest ← step 6).
+3. **~~Step 6 runs TWICE~~ — RESOLVED 2026-08-19. It is one pass.** The two-pass shape was
+   justified by a cycle that did not exist, and the write-up is in `scripts/06_ancestry_qc.sh`.
+   Short version: the AF build never needed the grain (only `IID → (source_callset, dx_detailed)`,
+   now written by §12a as `sample_annot.csv` before step 1 runs), and `--geno/--maf/--hwe` commute
+   with `--exclude`, so pass 2's re-scan of `cohort_merged` was recomputing what it already had.
 
    ```
-   6  ancestry QC + PCA (pass 1, unfiltered)
-      review/plot_pcs_by_callset.py        -> eta² per PC per stratum. IS the filter needed?
-      af_concordance_build.sh              -> exclude_af_concordance.txt  (only if it is)
-      read the BY CALLSET PAIR table + the SENTINEL_LOCI tripwire in its log
-   6  ancestry QC + PCA (pass 2, picks the list up automatically)
-      clinical_core.py §12                 -> PCs changed, so the grain must be rebuilt
+   6  A  unfiltered per-ancestry QC + PCA   -> by_ancestry_qc/unfiltered/   (the BASELINE, kept)
+      B  af_concordance_build              -> exclude_af_concordance.txt   (from A, in-job)
+         read the BY CALLSET PAIR table + the sentinel tripwire in its log
+         (windows come from gene_annot.py/refFlat at runtime — no hardcoded coordinates)
+      C  apply the exclusion               -> cohort_<ANC>_qc              (the ASSOCIATION set)
+      D  prune + PCA on the filtered set   -> cohort_<ANC>_pca             (the COVARIATES)
+      E  both retained_samples_manifest.csv files
+      analysis_grain.py §12                -> PCs changed, so the grain must be rebuilt
    ```
+
+   Two things the old shape needed and this one does not: the `mv by_ancestry_qc` before pass 2
+   (the baseline is now a permanent named output, not something you must remember to preserve),
+   and the mtime refusal on a stale exclusion list (stage B rebuilds it in-job from this merge; the
+   guard survives only on the `SKIP_AF_BUILD=1` path).
 
    Why the filter exists — **measured on THIS cohort, 2026-08-19.** Applying the 4,415-variant list
    takes EUR's worst callset eta² from **0.757 to 0.036 (95.2%)**, by excluding 0.058% of its
-   variants. The effect is concentrated, not diffuse. Method: the three step-6 QC filters are
-   per-variant and independent, so `cohort_<ANC>_qc` minus the blacklisted IDs is *exactly* pass 2's
-   output — the test needs no step-6 rerun and no overwrite. See `PROJECT_LOG.md` 2026-08-19.
+   variants. The effect is concentrated, not diffuse. That measurement is no longer a one-off:
+   stage D produces PCs for both generations every run, and `review/plot_af_filter_effect.py`
+   renders the before/after — figure and eta² tables — from the pair. See `PROJECT_LOG.md`
+   2026-08-19. The eta² CSVs are now versioned (`.gitignore` carries the reason).
 
    **It does NOT fix AJ (0.984 → 0.962), and the earlier claim that it would was wrong.** The
    docstring formerly cited `diag_af_crossstratum`: 147 EUR-flagged variants taking *AJ's* eta² from
@@ -241,7 +334,7 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    item — "nothing here builds it" — was true of the repo and false of the cluster, which is
    precisely why it went unnoticed. Do not assume local absence means cluster absence.
 
-4. **`clinical_core.py` runs on the CLUSTER ONLY. Do not run it on a laptop.** The two machines
+4. **The clinical side runs on the CLUSTER ONLY — both halves. Do not run either on a laptop.** The two machines
    hold different clinical inputs, and that is how the previous `analysis_grain.csv` acquired
    BR rows no cluster run could have produced:
 
@@ -257,16 +350,57 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    `WGS_sample_QC_info.csv`. Do not "fix" DivCo by pushing the laptop's 2 files up: the cluster's
    set is larger and correct.
 
-   Run it as: `module load python/3.11 && source .venv/bin/activate && python3 clinical_core.py`.
-   The system Anaconda py3.9 is on `PATH` and is not the pinned environment.
+   Run them as: `module load python/3.11 && source .venv/bin/activate && python3 clinical_core.py`
+   (before step 1) and `python3 analysis_grain.py` (after step 6). The system Anaconda py3.9 is on
+   `PATH` and is not the pinned environment.
 
-5. **The cluster's `README.md` (30 KB) has not been merged in.** `06_ancestry_qc.sh` references
-   its §2 (reference data acquisition) and §3 (per-step commands) by number. Those sections
-   should be folded into this file.
+5. **The cluster's `README.md` (30 KB) still has not been merged in.** The repo's `README.md` was
+   brought up to date 2026-08-19 — four callsets, the current script list, the real handoff
+   locations, and the gotchas learned since August — but it was rewritten from the repo's own
+   state, not merged with the cluster's longer copy. `06_ancestry_qc.sh` references that copy's §2
+   (reference data acquisition) by number, and §2 is the part the repo version still lacks:
+   nothing here says how to obtain the reference panel or the liftover chain. Diff the two before
+   trusting either.
 
 6. **DivCo's source VCF is 0 bytes** on the cluster (`merged.deduped.vcf.gz`). The pgen was derived
    before it was truncated, so nothing is blocked, but DivCo cannot be re-derived from source
    without re-pulling from Synapse.
+
+7. **The HWE stage has no excess-over-chance gate, and one LRRK2 variant turns on it.**
+   `af_concordance_build.py` does `hwe_failed |= fail` for every (stratum × callset) control row
+   that clears `MIN_HWE_CONTROLS`, regardless of whether that row shows any excess over its own
+   chance expectation — which the script computes and prints. It then applies the union to **every**
+   stratum. Job 27857727:
+
+   | stratum | callset | controls | fail | exp by chance | ratio |
+   |---|---|---|---|---|---|
+   | EUR | `wgs_harm` | 328 | 1,680 | 377 | **4.5×** |
+   | EUR | `wb_dwgs` | 3,064 | 132 | 377 | 0.35× |
+   | AJ | `wb_dwgs` | 638 | 97 | 400 | 0.24× |
+
+   `wgs_harm` clears expectation 4.5× from the *smallest* sample of the three — real het excess,
+   consistent with mismapping in the lifted callset. The other two are at or below chance, and
+   underdispersion is expected at these control counts (the HWE p-distribution is discrete and
+   conservative at n in the hundreds), which is a second reason a below-chance row should not vote.
+   Those two rows still contributed up to 229 of the 4,415.
+
+   **What it costs concretely:** `chr12:40227079:C:T`, inside LRRK2, was never flagged by the
+   frequency test (max spread 0.034, under the 0.05 threshold) and is excluded from every stratum
+   on the strength of one chance-level HWE hit in AJ — a stratum that contributes nothing to the
+   primary contrast. Gating on observed > 2× expected keeps EUR/`wgs_harm` and drops the other two.
+
+   **SETTLED 2026-08-20 — the gate is fully determined.** CR1 **passes** HWE in all three testable
+   callsets (the 2026-08-19 entry claiming it failed all three was misread; see the later log entry)
+   and is excluded on the frequency test plus a **64.5% call rate in `divco_hs`** — 156 of 242
+   alleles, where the same samples are 242/242 at the LRRK2 site, so the dropout is site-specific.
+   CR1 is unaffected by this gate. LRRK2 fails **AJ/`wb_dwgs` only**, and the same callset tested in
+   EUR with 3,064 controls instead of 638 **passes** — a real het-excess mechanism would show up
+   more strongly in the larger sample, not vanish. So the gate leaves CR1 excluded and un-excludes
+   LRRK2. Build it, rerun step 6 (~7 min) and the grain (~1 min).
+
+   Related composition point for the methods: the 1,069 HWE-only additions are general variant QC,
+   not cohort-artifact removal, and they ride into the same union. The docstring's "mechanism-based
+   confirmation" framing is true of the 840 overlapping variants and not of the other 1,069.
 
 ## Provenance
 
@@ -282,8 +416,15 @@ to carry `PROJECT_LOG.md`, `af_concordance_build.{py,sh}`, `08_ctrl_ctrl_filter.
 `rm` or a bad checkout, and does **not** survive disk or laptop loss. One machine, one disk, with
 history.
 
-`clinical_core_out/` and `results/` remain gitignored, deliberately. Two consequences to know:
+`clinical_core_out/` and `results/` remain gitignored, deliberately. One consequence still to know:
 the laptop's `analysis_grain.csv` is the stale 11,918-row one (BR-DSNWGS as 19 AFR) and must never
-be rsynced upward over the cluster's correct 12,495-row grain; and `results/pca/*_eta2.csv` is
-unversioned, which is why the 0.984 / 0.757 baseline survived only because the numbers were typed
-into `PROJECT_LOG.md` before step 6 pass 2 could overwrite the originals.
+be rsynced upward over the cluster's correct 12,495-row grain.
+
+**`results/pca/*_eta2.csv` is no longer unversioned** — as of 2026-08-19 those tables and
+`af_filter_effect*.csv` are the one exception in `.gitignore`, with the reason written there. They
+are aggregate (one row per stratum, no IIDs, no genotypes), so they are safe to version, and the
+0.984 / 0.757 baseline previously survived being overwritten only because the numbers had been
+typed into `PROJECT_LOG.md` by hand. "Regenerable from code + data" was true in principle and
+false in practice: regenerating a *baseline* means re-running the step in a state that no longer
+exists. The negations are narrow on purpose — `results/retained_samples_manifest.csv` is one row
+per sample and stays out.

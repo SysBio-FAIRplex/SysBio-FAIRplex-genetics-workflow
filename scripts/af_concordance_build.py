@@ -67,8 +67,20 @@ het deficiency (which pooling and substructure create artificially) is spared.
 The two stages are unioned into one exclusion list, and the overlap is reported: HWE independently
 re-finding the frequency-flagged variants is a mechanism-based confirmation of an effect-based test.
 
-GUARDRAIL: human-run. Reads the id-bearing grain and genotypes via plink2, writes the exclusion
-list, prints ONLY aggregate counts.
+WHAT THIS READS, AND WHY IT IS NOT THE GRAIN ANY MORE. This script needs exactly one mapping:
+IID -> (source_callset, dx_detailed). Nothing else. It never reads a PC, and it never reads an
+ancestry column either — the stratum comes from WHICH cohort_<ANC>_qc fileset a sample appears
+in, and the comparison cells are keyed (dx x callset). It used to take analysis_grain.csv purely
+because that is the file which happens to carry dx and the PCs together, and that accident was
+read as a dependency: it produced the claimed cycle "grain <- §12 <- PCs <- step 6", which forced
+step 6 to run twice with this script wedged between the passes. Both fields are pure clinical
+output available before step 1 runs, so §12a now writes them as sample_annot.csv and step 6 is a
+single pass. --grain is still accepted as an alias: the reader keys on column NAMES, and the
+grain carries the same two names, so pointing this at either file gives an identical result. That
+equivalence is the regression test for the split.
+
+GUARDRAIL: human-run. Reads the id-bearing sample annotation and genotypes via plink2, writes the
+exclusion list, prints ONLY aggregate counts.
 """
 from collections import defaultdict
 from pathlib import Path
@@ -77,20 +89,19 @@ import csv
 import subprocess
 import sys
 
-# Known loci we must NOT silently delete. GRCh38. Tripwire only — nothing is auto-whitelisted.
-# A hit means the cell design did not fully separate technical from real, or that locus is
-# genuinely broken in one callset. Either way: stop and look.
-SENTINEL_LOCI = [
-    ("APOE/rs429358", "19", 44_908_684, 50_000),
-    ("APOE/rs7412",   "19", 44_908_822, 50_000),
-    ("TREM2",         "6",  41_160_000, 50_000),
-    ("BIN1",          "2", 127_100_000, 50_000),
-    ("CR1",           "1", 207_500_000, 50_000),
-    ("MAPT/17q21.31", "17", 45_900_000, 200_000),
-    ("SNCA",          "4",  89_700_000, 100_000),
-    ("GBA1",          "1", 155_230_000, 50_000),
-    ("LRRK2",         "12", 40_200_000, 100_000),
-]
+# Known loci we must NOT silently delete. Tripwire only — nothing is auto-whitelisted. A hit means
+# the cell design did not fully separate technical from real, or that locus is genuinely broken in
+# one callset. Either way: stop and look.
+#
+# COORDINATES LIVE IN ONE PLACE, AND IT IS NOT HERE. This used to be a hardcoded
+# [(name, chrom, pos, window)] table, duplicated verbatim into 08_ctrl_ctrl_filter.py. Measured
+# against ref/refFlat.txt those windows covered 37% of CR1, 52% of LRRK2 and 66% of SNCA, and the
+# set contained no HLA gene at all — while HLA-DRB1 is one of this study's two real findings. A
+# tripwire that sees a third of its gene reports "none — no flagged variant falls near a headline
+# locus" and reads as a clean result. gene_annot.py resolves full transcript extents from refFlat
+# at runtime, verifies the build via APOE, and warns on any symbol it cannot resolve; importing it
+# is what keeps the two scripts from drifting apart again.
+from gene_annot import load_genes, sentinel_hits, SENTINEL_FLANK
 
 
 def run(cmd):
@@ -102,17 +113,34 @@ def run(cmd):
     return r.stdout
 
 
-def read_grain(path):
-    """-> {iid: (callset, ancestry, dx)}. Columns are positional, per step 7's contract:
-    1 IID, 3 source_callset, 4 ancestry, 7 dx_detailed. The PCs (13-22) are deliberately NOT read —
-    they go stale the moment step 6 re-runs, and nothing here depends on them."""
+def read_annot(path):
+    """-> {iid: (source_callset, dx_detailed)}.
+
+    Keyed on column NAMES, not positions. That is what lets the same reader take either
+    sample_annot.csv (the PC-free half, written by §12a before any genotype step) or
+    analysis_grain.csv (which carries the same two names plus ancestry, sex and the PCs) — so the
+    two can be diffed against each other to prove the split changed nothing. The old positional
+    reader could not: it hardcoded the grain's column order, which is also why the dependency on
+    the grain looked structural when it was only a file-layout accident.
+
+    Anything else in the file is ignored on purpose. The PCs go stale the moment step 6 re-runs
+    and nothing here depends on them; ancestry is never consulted because the stratum is set by
+    which fileset a sample is in."""
     out = {}
     with open(path, newline="") as fh:
         rdr = csv.reader(fh)
-        next(rdr, None)
+        hdr = next(rdr, None)
+        if not hdr:
+            sys.exit(f"{path}: empty")
+        cols = {c.strip(): i for i, c in enumerate(hdr)}
+        missing = [c for c in ("IID", "source_callset", "dx_detailed") if c not in cols]
+        if missing:
+            sys.exit(f"{path}: missing required column(s) {', '.join(missing)}. "
+                     f"Expected a sample_annot.csv or analysis_grain.csv; found: {', '.join(hdr)}")
+        i_id, i_cs, i_dx = cols["IID"], cols["source_callset"], cols["dx_detailed"]
         for row in rdr:
-            if len(row) >= 7 and row[0].strip():
-                out[row[0].strip()] = (row[2].strip(), row[3].strip(), row[6].strip())
+            if len(row) > max(i_id, i_cs, i_dx) and row[i_id].strip():
+                out[row[i_id].strip()] = (row[i_cs].strip(), row[i_dx].strip())
     return out
 
 
@@ -131,22 +159,21 @@ def read_afreq(path):
     return out
 
 
-def parse_id(vid):
-    """IDs embed alleles: chr19:44908684:T:C -> ('19', 44908684). None if unparseable."""
-    p = vid.split(":")
-    if len(p) < 2:
-        return None
-    try:
-        return (p[0][3:] if p[0].startswith("chr") else p[0]), int(p[1])
-    except ValueError:
-        return None
+# parse_id lived here, duplicated in 08_ctrl_ctrl_filter.py. It is gene_annot.parse_variant_id now,
+# called via sentinel_hits — the same consolidation as the coordinates above.
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--qc-dir", required=True, help="step 6's by_ancestry_qc")
-    ap.add_argument("--grain", required=True)
+    ap.add_argument("--qc-dir", required=True,
+                    help="step 6 stage A's UNFILTERED per-ancestry filesets "
+                         "(by_ancestry_qc/unfiltered). Must be unfiltered: deriving the list "
+                         "from a directory that already has a previous list applied would "
+                         "pre-filter this filter's own input, and it would look clean either way")
+    ap.add_argument("--annot", "--grain", dest="annot", required=True,
+                    help="sample_annot.csv (IID, source_callset, dx_detailed). analysis_grain.csv "
+                         "also works — same column names — and the two must agree")
     ap.add_argument("--out", required=True, help="exclusion list to write")
     ap.add_argument("--work", required=True)
     ap.add_argument("--thresh", type=float, default=0.05,
@@ -185,8 +212,8 @@ def main():
 
     qcd, work = Path(a.qc_dir), Path(a.work)
     work.mkdir(parents=True, exist_ok=True)
-    grain = read_grain(a.grain)
-    print(f"grain: {len(grain):,} samples")
+    annot = read_annot(a.annot)
+    print(f"annot: {len(annot):,} samples from {a.annot}")
     print(f"flag rule: |dAF| > {a.thresh} AND z > {a.zmin}, within (stratum x dx) cells "
           f"of >= {a.min_cell} per callset\n")
 
@@ -221,12 +248,22 @@ def main():
                 anc_vars.add(line.split()[1])
         universe |= anc_vars
 
-        # (dx, callset) -> members, restricted to samples actually in this fileset
+        # (dx, callset) -> members, restricted to samples actually in this fileset.
+        # Note where the stratum comes from: `anc` is the loop variable over filesets, never a
+        # column. An IID absent from the annotation is skipped rather than pooled into a blank
+        # cell — an unlabelled sample has no disease to hold constant, so it cannot participate
+        # in a comparison whose whole validity rests on disease being constant.
         cell = defaultdict(list)
+        n_unannotated = 0
         for iid in fid:
-            g = grain.get(iid)
+            g = annot.get(iid)
             if g:
-                cell[(g[2], g[0])].append(iid)
+                cell[(g[1], g[0])].append(iid)
+            else:
+                n_unannotated += 1
+        if n_unannotated:
+            print(f"{anc}: {n_unannotated:,} of {len(fid):,} samples not in the annotation — "
+                  f"excluded from every cell")
 
         dxs = a.dx or sorted({d for d, _ in cell})
         freq_cache = {}
@@ -430,20 +467,42 @@ def main():
     print(f"\nwrote {a.out}")
 
     # ── tripwire: is the filter reaching known biology? ──
-    print("\n---- sentinel loci (expect empty; a hit means stop and look) ----")
-    pos = [(v, parse_id(v)) for v in flagged]
-    hits = 0
-    for name, c, p, win in SENTINEL_LOCI:
-        near = [v for v, cp in pos if cp and cp[0] == c and abs(cp[1] - p) <= win]
-        if near:
-            hits += len(near)
-            print(f"  {name:16} {len(near)} flagged within {win//1000}kb:")
-            for v in sorted(near)[:10]:
-                print(f"      {v}")
-    if not hits:
-        print("  none — no flagged variant falls near a headline AD/PD locus.")
+    # Windows are full transcript extents from refFlat ±SENTINEL_FLANK, resolved at runtime.
+    print(f"\n---- sentinel loci (gene extents ±{SENTINEL_FLANK//1000}kb from refFlat; "
+          f"expect empty) ----")
+    try:
+        genes = load_genes()
+        print(f"  refFlat: {load_genes.path}")
+        hits = sentinel_hits(sorted(flagged), genes=genes)
+    except (FileNotFoundError, ValueError) as e:
+        # Loud and non-fatal, deliberately. The list is already written and a 7-minute run should
+        # not be discarded over a missing annotation — but losing the tripwire in SILENCE is the
+        # failure mode this whole section exists to prevent, so it gets a banner, not a warning.
+        print("  " + "!" * 74)
+        print(f"  !! SENTINEL CHECK DID NOT RUN: {e}")
+        print("  !! The exclusion list was NOT checked against any known AD/PD locus.")
+        print("  !! Fix ref/refFlat.txt (or $REFFLAT) and re-run with SKIP_AF_BUILD unset before")
+        print("  !! trusting this list. Absence of a hit below is NOT evidence of no hit.")
+        print("  " + "!" * 74)
+        hits = None
+
+    if hits is None:
+        pass
+    elif not hits:
+        print("  none — no flagged variant falls in a sentinel locus.")
     else:
-        print("\n  Inspect these before running step 6. Nothing is auto-whitelisted.")
+        n = sum(len(v) for _, v in hits)
+        for label, near in hits:
+            print(f"  {label:22} {len(near)} flagged:")
+            for v in near[:10]:
+                print(f"      {v}")
+            if len(near) > 10:
+                print(f"      ... and {len(near)-10} more")
+        print(f"\n  {n} flagged variant(s) in {len(hits)} sentinel locus/loci. Nothing is")
+        print("  auto-whitelisted. NOTE: stage C of step 6 applies this list LATER IN THE SAME")
+        print("  JOB, so this is a report, not a checkpoint — resolve each hit against the")
+        print("  per-cell .afreq / .snplist intermediates in --work before step 7 reads the")
+        print("  association set. Record the verdict in PROJECT_LOG.md so it is not re-derived.")
 
 
 if __name__ == "__main__":
