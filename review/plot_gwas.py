@@ -130,9 +130,14 @@ def qq_panel(ax, p, lam_data, lam_sum, lam1k_sum):
         drop = np.random.default_rng(0).choice(idx, size=idx.size - 50_000, replace=False)
         keep[drop] = False
     ax.scatter(exp[keep], obs[keep], s=6, c="#333333", edgecolors="none", rasterized=True)
-    lim = max(exp.max(), obs.max()) * 1.05
-    ax.plot([0, lim], [0, lim], color="#c0392b", lw=1)
-    ax.set_xlim(0, lim); ax.set_ylim(0, lim)
+    # Each axis on its OWN range. A shared limit ties x to the observed maximum, so one strong
+    # locus stretches the x-axis far past where any expected quantile can reach — at n=5.2M the
+    # largest expected value is 6.7, and an APOE hit at 14.5 pushed x to 15 and squeezed every
+    # point into the left 45% of the panel. The null line stops where the data does.
+    xmax = exp.max() * 1.05
+    ymax = obs.max() * 1.05
+    ax.plot([0, min(xmax, ymax)], [0, min(xmax, ymax)], color="#c0392b", lw=1)
+    ax.set_xlim(0, xmax); ax.set_ylim(0, ymax)
     ax.set_xlabel(r"Expected $-\log_{10}(p)$")
     ax.set_ylabel(r"Observed $-\log_{10}(p)$")
     txt = fr"$\lambda_{{GC}}$ = {lam_data:.3f} (data)"

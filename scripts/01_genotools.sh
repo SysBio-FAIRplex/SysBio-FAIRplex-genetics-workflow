@@ -16,15 +16,22 @@
 # OUT_DIR  genotools output directory
 # DATASET  short name for logging (wgs_harm, divco_hs, wb_dwgs, br_dsnwgs)
 #
-# KNOWN DEVIATION: the three paths below are ABSOLUTE, so this is the one file in the project that
-# is not location-independent. It was reverted to a known-good absolute-path baseline 2026-08-11
-# while genotools was failing; all four callsets have since completed, so re-applying the config.sh
-# refactor is unblocked and outstanding. See HANDOFF "Known issues".
+# Paths come from config.sh, like every other step. This file carried three ABSOLUTE paths from
+# 2026-08-11 to 2026-08-21, a deliberate debugging baseline from when genotools was failing; all
+# four callsets have since completed, so the baseline was retired. The resolved strings are
+# identical on the cluster, so this changed nothing about what runs.
 #
-# Fixed paths (shared across all datasets):
-REF_PANEL="/data/CARDPB2/sysbio/wgs/data/ref/ref_panel_gp2_prune_rm_underperform_pos_update"
-REF_LABELS="/data/CARDPB2/sysbio/wgs/data/ref/ref_panel_ancestry_updated.txt"
-WGS_ROOT="/data/CARDPB2/sysbio/wgs"
+# The hazard that motivated hardcoding them is real and is why the guard below exists: there is no
+# `set -e` here, so a config.sh that fails to source would leave these EMPTY and the script would
+# carry on regardless. Assert rather than trust (rule 3).
+BUNDLE="${BUNDLE:-${SLURM_SUBMIT_DIR:-$PWD}}"
+source "${BUNDLE}/config.sh" || { echo "ERROR: cannot source ${BUNDLE}/config.sh" >&2; exit 1; }
+
+for _v in REF_PANEL REF_LABELS WGS_ROOT VENV; do
+    [[ -n "${!_v:-}" ]] || { echo "ERROR: ${_v} is empty after sourcing config.sh — refusing to run" >&2; exit 1; }
+done
+[[ -f "${REF_PANEL}.bim" ]] || { echo "ERROR: no reference panel at ${REF_PANEL}.bim" >&2; exit 1; }
+[[ -f "${REF_LABELS}" ]]    || { echo "ERROR: no reference labels at ${REF_LABELS}" >&2; exit 1; }
 
 # Derived paths
 SEXUPD="${PGEN}_sexupd"
@@ -37,8 +44,10 @@ mkdir -p "${OUT_DIR}"
 module load plink/6-alpha
 module load python/3.11
 
+# Absolute, not `source .venv/bin/activate` off a relative path — that silently depended on the
+# job's working directory.
+source "${VENV}/bin/activate"
 cd "${WGS_ROOT}"
-source .venv/bin/activate
 
 echo "=========================================="
 echo "GenoTools — ${DATASET}"
