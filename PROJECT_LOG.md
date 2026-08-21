@@ -94,8 +94,9 @@ known issue 2 and the 2026-08-21 entry below.
   from `<dataset>/metadata/` rather than the corrected `clinical_core_out/`. Never re-checked.
 - **The cluster's 30 KB `README.md` still is not merged in**, and its §2 (reference-data acquisition)
   is the part the repo copy lacks — `06_ancestry_qc.sh` cites that section by number.
-- **One implementation duplication left:** `review/mask_cohort_artifacts.py` vs the authoritative
-  `scripts/08_ctrl_ctrl_filter.py`. The pheno/covar duplication was resolved 2026-08-20.
+- ~~**One implementation duplication left:** `review/mask_cohort_artifacts.py`~~ — CLOSED
+  2026-08-21, the file is deleted. `scripts/08_ctrl_ctrl_filter.py` is the only implementation.
+  The pheno/covar duplication was resolved 2026-08-20. No known duplications remain.
 
 ### Traps that have each cost a run
 
@@ -119,6 +120,53 @@ known issue 2 and the 2026-08-21 entry below.
   drops. Enrollment overlap is a superset of sequencing overlap.
 - **Step 4's `COMMON_GENO=0.005` is load-bearing** — it must stay below the smallest callset's share
   of the cohort (BR is 97/13,334 = 0.0073). Re-check if a callset under ~0.5% is ever added.
+
+---
+
+## 2026-08-21 — git remote created. Subject-level data found in notebook outputs and scrubbed from history. Four retired scripts deleted.
+
+**The repo has a remote for the first time:** `SysBio-FAIRplex/amp-ad-pd-wgs-gwas` (private). Until
+today the entire history was 12 commits on one laptop disk.
+
+**Found before the first push: `demo_sample_check/scripts/demo_sample_check.ipynb` carried 18 stored
+cell outputs, one of them subject-level** — a rendered DataFrame of `individual_id` × callset
+membership (real ROSMAP donor IDs, enumerated in the output). The other 17 were aggregate. This is
+controlled-access data under the AMP-AD/AMP-PD DUA, and `.gitignore` already excluded the *file*
+form of exactly this content (`demo_sample_check/out/` — "carries donor IDs joined to phenotype").
+It leaked because `.gitignore` governs paths and this was inside a tracked file.
+
+**Fixed by history rewrite, not by a follow-up commit.** The notebook entered at `1277fc4` and was
+never modified after, so `git filter-repo --path … --invert-paths` cost no real source history. The
+cleaned notebook was re-added as a fresh commit (`046e723`) and the remote created only afterwards,
+so the blob was never published. Verified: `git log --all -- <path>` and
+`git rev-list --objects --all | grep` both empty before re-adding.
+
+**Also checked and clean:** `wgs_core.ipynb` has zero stored outputs; both tracked
+`results/pca/af_filter_effect_gated4187*.csv` are aggregate (one row per stratum, no IIDs).
+
+**Guard added — `scripts/nb_guard.py` + a `pre-commit` hook** (source at `scripts/hooks-pre-commit`,
+installed by hand after a clone). It refuses any staged `.ipynb` carrying stored outputs. It does
+**not** try to judge which outputs are aggregate: a judgement is precisely what failed here, and
+17-of-18-safe is what makes that judgement look reliable. Verified by negative test — a planted
+notebook with one output was refused, exit 1. Rule 3: the check proves it can fire.
+
+**Deleted, with reasons, so the grep finds them here rather than the files:**
+
+| file | why it went |
+|---|---|
+| `scripts/diag_threads.py` | Blocker 1 (GenoTools worker-pool sizing) closed 2026-08-12; the finding — "the worker *count* is the lever, not the thread env vars" — is in README and at 2026-08-12 below |
+| `scripts/diag_cah.sh` | Blocker 2 (all-97-CAH) closed 2026-08-14 by `--sort-vars` in step 1; postmortem of a genotools output dir with no remaining subject |
+| `review/compare_pcs.py` | forensic tool for "did the PCs change between two manifests", written during the stale-exclusion-list investigation (2026-08-17). Handled sign flips and PC reordering. No callers; `plot_af_filter_effect.py`'s eta² tables answer the live version of the question |
+| `review/mask_cohort_artifacts.py` | the last known duplicate implementation — see the entry above. Its docstring cited `gwas_per_ancestry.sh` (retired) and `docs/METHODS.md` (never existed) |
+
+Deleted rather than moved to an in-repo `archive/`: a second copy of a dead concept is the rule-2
+failure mode, and with a remote now in place git history is a real archive. The cluster's
+`scripts_archive/ad-pd-gwas-jul28/` is untouched — that is July provenance, not a graveyard for
+these.
+
+**Rule 2's other half is NOT done for these four.** `rsync` without `--delete` cannot express a
+deletion, so all four still exist on biowulf until removed by hand. That `rm` is pending — see
+HANDOFF.
 
 ---
 

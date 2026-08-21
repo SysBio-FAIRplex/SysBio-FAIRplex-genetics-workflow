@@ -181,17 +181,15 @@ scripts/
   # ── read-only diagnostics ─────────────────────────────────────────────────
   diag_order.py                ← variant order vs the reference panel. RUN THIS on any new
                                  callset before trusting its ancestry output (see gotchas).
-  diag_cah.sh                  ← postmortem of a genotools output directory
-  diag_threads.py              ← what the process actually sees vs the SLURM allocation
   gene_annot.py                ← locus coordinates from ref/refFlat.txt
   genotools_capped.py          ← GenoTools entry point that respects the allocation
   runlog.sh                    ← regenerates RUNLOG.md from the SLURM accounting log
+  nb_guard.py                  ← refuses to commit a notebook carrying stored outputs
 
 review/                        ← runs locally on downloaded outputs; no cluster, no genotypes
   plot_af_filter_effect.py     ← the AF-filter before/after proof figure + eta^2 tables
   plot_pcs_by_callset.py       ← PC scatter by callset + eta^2 per PC per stratum
   plot_gwas.py                 ← QQ + Manhattan
-  compare_pcs.py  mask_cohort_artifacts.py
 ```
 
 The clinical side is three files at the project root:

@@ -37,7 +37,7 @@ stale against the run that produced it.
 | `scripts/ancestry_qc_manifest.py` | step 6 stage E: `retained_samples_manifest.csv`, once per generation. |
 | `review/plot_af_filter_effect.py` | the collaborator-facing before/after figure + eta² tables. |
 | `scripts/gene_annot.py` + `ref/refFlat.txt` | **the single source of locus coordinates**, and now a **read-only CLI with no pipeline callers** — the sentinel API both pipeline scripts imported was deleted 2026-08-20. `python3 scripts/gene_annot.py CR1 SNCA LRRK2` / `--at chr12:40227079` |
-| `scripts/diag_order.py`, `scripts/diag_cah.sh` | read-only. Variant order vs the panel; postmortem of a genotools output dir. |
+| `scripts/diag_order.py` | read-only **preflight gate** — variant order vs the reference panel. Run on any callset not already cleared, BEFORE step 1. |
 | `review/` | goals 3 and 4: QQ/Manhattan, ctrl-vs-ctrl mask, eta² of callset on each PC. |
 | `data/**/metadata/` | the 11 clinical files `clinical_core.py` opens. Gitignored — controlled access. |
 | `PROJECT_LOG.md` | append-only: what we did, why, and what was ruled out. This file is state; that one is history. |
@@ -114,7 +114,7 @@ python3 review/plot_af_filter_effect.py \
 # So analysis_grain.py above is a hard prerequisite, and a contrasts.csv predating 2026-08-21 lacks
 # the callset-skew columns -> step 7 exits 3 naming the missing one. Rerun the grain, don't patch it.
 ./submit.sh scripts/07_gwas.sh            # reads $PHENO_SRC/$COVAR_SRC/$CONTRASTS_CSV
-python3 review/plot_gwas.py               # + mask_cohort_artifacts.py
+python3 review/plot_gwas.py               # QQ + Manhattan, local, on downloaded sumstats
 ./submit.sh scripts/08_ctrl_ctrl_filter.sh   # annotates; never subtracts (see known issue 2)
 ```
 
@@ -429,15 +429,15 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    catches a mismatched generation that mtime alone would miss. `contrasts.csv` is read **by header
    name**, so a reordered column aborts with the missing name instead of mislabelling a contrast.
 
-2. **Two implementations of the ctrl-vs-ctrl artifact filter — now both in the repo.**
-   `08_ctrl_ctrl_filter.{py,sh}` has been promoted out of the cluster's `scripts_archive/` into
-   `scripts/` and committed. **It is the authoritative one.** It carries the argument that APOE is
-   *expected* to reach significance in the control-vs-control scan — the two control arms are
-   differentially screened, AMP-AD's as cognitively normal and AMP-PD's for PD and not AD — so
-   subtracting destructively would delete the study's strongest true locus. It therefore annotates
-   (`CTRL_P` in `.ccannot.tsv`) and writes `.ccfilt.tsv` separately, never touching the primary.
-   `review/mask_cohort_artifacts.py` is the older post-hoc version and lacks that argument; prefer
-   the `scripts/` one. Still two implementations — pick one.
+2. **~~Two implementations of the ctrl-vs-ctrl artifact filter~~ — RESOLVED 2026-08-21.
+   `scripts/08_ctrl_ctrl_filter.{py,sh}` is the only one.** `review/mask_cohort_artifacts.py`, the
+   older post-hoc version, was deleted: it lacked the licence argument below, and its docstring
+   still cited `gwas_per_ancestry.sh` (retired) and a `docs/METHODS.md` that never existed. Step 8
+   carries the argument that APOE is *expected* to reach significance in the control-vs-control
+   scan — the two control arms are differentially screened, AMP-AD's as cognitively normal and
+   AMP-PD's for PD and not AD — so subtracting destructively would delete the study's strongest
+   true locus. It therefore annotates (`CTRL_P` in `.ccannot.tsv`) and writes `.ccfilt.tsv`
+   separately, never touching the primary.
 
    This is also the licence boundary against step 6a: **6a may delete variants** because disease is
    held constant inside each of its cells; **step 8 may not**, because its control definitions

@@ -40,11 +40,11 @@ Dead-code fixes read as solved and are not. If a call site cannot be converted y
 `HANDOFF.md` "Known issues" with the reason — an unwired replacement that nobody flagged is
 indistinguishable from a bug.
 
-Corollary — one implementation per concept. The pheno/covar duplication was resolved 2026-08-20:
-`analysis_grain.py` §13 is the sole definition of who is a case, and `07_gwas.sh` reads its files
-instead of rebuilding them in awk. One known live duplication remains, already in `HANDOFF.md`: the
-ctrl-vs-ctrl filter (`scripts/08_*` is authoritative over `review/mask_cohort_artifacts.py`). Do not
-add a second.
+Corollary — one implementation per concept. Both known duplications are now closed: pheno/covar
+2026-08-20 (`analysis_grain.py` §13 is the sole definition of who is a case, and `07_gwas.sh` reads
+its files instead of rebuilding them in awk), and the ctrl-vs-ctrl filter 2026-08-21
+(`review/mask_cohort_artifacts.py` deleted; `scripts/08_*` is the only implementation). Do not add
+a third.
 
 ## 3. Absence of a warning is not evidence
 

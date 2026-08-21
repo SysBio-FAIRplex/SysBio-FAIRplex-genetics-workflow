@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed from scripts/nb_guard.py -- see its docstring. Reinstall after a fresh clone:
+#   cp scripts/hooks-pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+exec python3 "$(git rev-parse --show-toplevel)/scripts/nb_guard.py" --staged
