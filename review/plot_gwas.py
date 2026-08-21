@@ -12,7 +12,8 @@ locally / by the agent. It reads only #CHROM/POS/P (+A1_FREQ) and the summary CS
 INPUT  step 7's output dir: data/merged/by_ancestry_qc/gwas/, which is where this looks by default
 — no copying, because code and data share a root. Running on a laptop instead, put a copy of that
 directory at results/gwas/ and it is found there as a fallback.
-    (needs gwas_summary.csv + gwas_<ANC>_<CASE>_vs_<CTRL>.pheno.glm.logistic.hybrid files)
+    (needs gwas_summary.csv + gwas_<ANC>_<CONTRAST>.filtered.tsv, or the raw
+     gwas_<ANC>_<CONTRAST>.pheno.glm.logistic.hybrid — either naming is accepted)
 
 USAGE (from anywhere — paths resolve off this file, not the CWD):
     python3 review/plot_gwas.py                          # everything in <bundle>/results/gwas
@@ -202,16 +203,21 @@ def main():
     else:
         print(f"note: no gwas_summary.csv in {gdir} — plotting without annotations", file=sys.stderr)
 
-    files = sorted(glob.glob(os.path.join(gdir, "gwas_*.pheno.glm.logistic*")))
+    # Two naming forms, both from step 7: the raw plink2 output and the ADD-only |BETA|-filtered
+    # copy. The .filtered.tsv is what gets rsync'd back, because the hybrids are several times
+    # larger. Both carry the same ADD rows, so lambda from either matches gwas_summary.csv's.
+    files = sorted(glob.glob(os.path.join(gdir, "gwas_*.pheno.glm.logistic*"))
+                   + glob.glob(os.path.join(gdir, "gwas_*.filtered.tsv")))
     if not files:
-        print(f"No sumstats found in {gdir} (expected gwas_<ANC>_<CASE>_vs_<CTRL>.pheno.glm.logistic*)", file=sys.stderr)
+        print(f"No sumstats found in {gdir} — expected gwas_<ANC>_<CONTRAST>.filtered.tsv or "
+              f"gwas_<ANC>_<CONTRAST>.pheno.glm.logistic*", file=sys.stderr)
         sys.exit(1)
 
     made = 0
     print(f"{'ANC':4} {'contrast':16} {'nSNP':>10} {'lam_data':>9} {'lam_summary':>12}  status")
     for f in files:
         base = os.path.basename(f)
-        m = re.match(r"gwas_([A-Za-z]+)_(.+?)\.pheno\.glm\.logistic", base)
+        m = re.match(r"gwas_([A-Za-z]+)_(.+?)\.(?:pheno\.glm\.logistic|filtered\.tsv)", base)
         if not m:
             continue
         anc, contrast = m.group(1), m.group(2)
