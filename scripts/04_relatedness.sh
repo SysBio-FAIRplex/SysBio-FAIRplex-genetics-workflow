@@ -19,13 +19,11 @@
 #      REPORT-ONLY within each stratum (no --ancestry: each subset is already homogeneous).
 #      Step 5 (05_excludelist.py) makes the dup/relative picks — not genotools.
 #
-# Why split instead of genotools --ancestry: reuses the per-callset labels as locked instead
-# of re-projecting on the merged intersection (fewer variants -> worse
-# calls + label reconciliation). KING-robust at close-kinship thresholds tolerates the residual
-# within-stratum structure.
-# KNOWN LIMITATION: a related/dup pair split across two ancestry labels is not compared. Same-
-# person cross-dataset dups (Rush<->ROSMAP) get the same label -> same stratum -> caught. Only
-# label noise near admixed groups is at risk; acceptable (report-only + human adjudication).
+# Split rather than genotools --ancestry: re-projecting on the merged intersection means fewer
+# variants, worse calls and label reconciliation. KING-robust tolerates the residual structure.
+# KNOWN LIMITATION: a related/dup pair split across two ancestry labels is never compared.
+# Same-person cross-dataset dups share a label, so they are caught; only label noise near admixed
+# groups is at risk, which is acceptable for a report-only, human-adjudicated step.
 #
 #   ./submit.sh scripts/04_relatedness.sh
 

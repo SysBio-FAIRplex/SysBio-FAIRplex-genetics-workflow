@@ -17,12 +17,8 @@
 # | 14 | appendix: how definition-dependent is the AD arm (read-only) | — |
 #
 # **§11–13 live in `analysis_grain.py`,** which runs after step 6 and reads §9's audit tables
-# rather than re-deriving them. They used to sit at the end of this file, which meant reaching
-# them required re-executing §1–10 — re-reading eleven clinical files and *rewriting the
-# sex-update files step 1 had already consumed*, with nothing checking they still matched.
-# The section numbers are unchanged so every cross-reference in `HANDOFF.md`, `config.sh` and
-# `scripts/` still resolves; only the file they live in moved. §12a keeps its number because it
-# is the grain's other half, even though it runs on this side of the round trip.
+# rather than re-deriving them. Section numbers are unchanged, so every cross-reference in
+# `HANDOFF.md`, `config.sh` and `scripts/` still resolves; only the file they live in moved.
 #
 # Five cohorts — ROSMAP, Mayo, and MSBB (one AMP-AD harmonized set), AMP-AD Diverse
 # Cohorts, and AMP-PD — across four genotype callsets.
@@ -33,32 +29,9 @@
 #
 # **Guardrail.** Every cell prints aggregates. No cell prints a subject-level row.
 # Genotype files are read for sample IDs only and are never modified.
-
-# In[1]:
-
-
-# synapse get syn51757644 --downloadLocation data/amp-ad-genomics/DivCo_HS/metadata/
-# synapse get syn51757645 --downloadLocation data/amp-ad-genomics/DivCo_HS/metadata/
-# synapse get syn51757646 --downloadLocation data/amp-ad-genomics/DivCo_HS/metadata/
-
-# synapse get syn73713768 --downloadLocation data/amp-ad-genomics/WGS_Harmonization/metadata/
-# synapse get syn12178037 --downloadLocation data/amp-ad-genomics/WGS_Harmonization/metadata/
-# synapse get syn73713767 --downloadLocation data/amp-ad-genomics/WGS_Harmonization/metadata/
-# synapse get syn21893059 --downloadLocation data/amp-ad-genomics/WGS_Harmonization/metadata/
-# synapse get syn73713766 --downloadLocation data/amp-ad-genomics/WGS_Harmonization/metadata/
-
-
-# In[2]:
-
-
-# gcloud storage cp gs://amp-pd-data/releases/2023_v4release_1027/clinical/Demographics.csv data/amp-pd-genomics/metadata/ --billing-project 8641313829
-# gcloud storage cp gs://amp-pd-data/releases/2023_v4release_1027/amp_pd_participants.csv data/amp-pd-genomics/metadata/ --billing-project 8641313829
-# gcloud storage cp gs://amp-pd-data/releases/2023_v4release_1027/amp_pd_case_control.csv data/amp-pd-genomics/metadata/ --billing-project 8641313829
-# gcloud storage cp gs://amp-pd-data/releases/2023_v4release_1027/wgs_BR-DSNWGS_sample_inventory.csv data/amp-pd-genomics/metadata/ --billing-project 8641313829
-
-
-# In[3]:
-
+#
+# Clinical-file acquisition (the synapse/gcloud pulls) is recorded in wgs_core.ipynb §0
+# alongside the genotype pulls, so provenance lives in one place.
 
 import pandas as pd
 
@@ -79,9 +52,6 @@ pd.set_option("display.width", 130)
 # Seven files across five cohorts, each at individual grain. ROSMAP, Mayo, MSBB, and
 # Diverse Cohorts are one file each; AMP-PD takes three, joined on `participant_id`.
 # ROSMAP/Mayo/MSBB share the AMP-AD harmonized schema; the other two use their own.
-
-# In[4]:
-
 
 clinical_files = {
     "amp_ad_rosmap": AD_META / "ROSMAP_clinical_harmonized.csv",
@@ -117,9 +87,6 @@ for src, df in raw.items():
 # Diverse Cohorts ships a pre-adjudicated outcome; AMP-PD is clinical throughout and has
 # no neuropathology at all.
 
-# In[5]:
-
-
 instruments = {
     "amp_ad_rosmap": ["Braak", "amyCerad", "dcfdx_lv"],
     "amp_ad_mayo":   ["Braak", "amyThal", "diagnosis"],
@@ -146,10 +113,9 @@ for src, cols in instruments.items():
 #
 # `pheno` is the primary case/control label: `{AD, PD, control, other}`, or null.
 #
-# **AD is neuropathological.** Clinical diagnosis codes never define AD.
-#
-# **Missing inputs yield null, not `other`.** `other` means classified and neither case
-# nor control; null means not classifiable.
+# **AD is neuropathological.** Clinical diagnosis codes never define AD. **Missing inputs yield
+# null, not `other`** — `other` means classified and neither case nor control; null means not
+# classifiable, and nulls are excluded from every arm rather than pooled.
 #
 # | Cohort | Rule |
 # |---|---|
@@ -158,22 +124,15 @@ for src, cols in instruments.items():
 # | Diverse Cohorts | pre-adjudicated `ADoutcome`, or `mayoDx` for the Mayo contribution group |
 # | AMP-PD | curated `case_control_other_latest`: Case→PD, Control→control, Other excluded |
 #
-# **Mayo's control-purity screen.** Braak and Thal are both AD-specific axes, so a PSP
-# brain — a 4R-tauopathy with little amyloid — scores as a control on both and would
-# contaminate the control arm. Any neuropathological control whose `diagnosis` names a
-# disease is demoted to `other`. The screen is one-directional: it never rescues a null
-# and never overrides AD. It applies to Mayo alone, because Mayo is the only cohort with
-# an independent neuropathological diagnosis alongside the staging axes.
+# **Mayo's control-purity screen.** Braak and Thal are both AD-specific, so a PSP brain scores as
+# a control on both and would contaminate the arm. Any neuropath control whose `diagnosis` names a
+# disease is demoted to `other`. One-directional: never rescues a null, never overrides AD. Mayo
+# only — it is the sole cohort with an independent neuropath diagnosis alongside the staging axes.
 #
-# **Why Diverse Cohorts keeps its pre-made call** rather than recomputing from Braak+Thal:
-# the harmonized Thal column is a lossy subset of the plaque data the original
-# adjudication rested on, so recomputing would null out donors who have Braak but no Thal.
+# **Diverse Cohorts keeps its pre-made call**: the harmonized Thal column is a lossy subset of the
+# plaque data the original adjudication used, so recomputing would null donors with Braak but no Thal.
 #
-# **Never Braak alone** for any cohort — it misclassifies amyloid-negative age-related
-# tauopathy as AD.
-
-# In[6]:
-
+# **Never Braak alone** — it misclassifies amyloid-negative age-related tauopathy as AD.
 
 MISSING = {"missing or unknown", "NA", ""}
 
@@ -230,11 +189,8 @@ print("pheno rules defined")
 #
 # A second label for secondary analyses: `{PD, AD, MCI, DLB, PSP, control, other}`, or null.
 #
-# **Step 1, every cohort: if `pheno` is AD, `dx_detailed` is AD.** This pins the AD set
-# to be identical across both fields — a donor cannot be AD in one analysis and MCI in
-# another.
-#
-# **Step 2, otherwise, use the cohort's specific instrument:**
+# **If `pheno` is AD, `dx_detailed` is AD**, every cohort — the AD set is identical across both
+# fields, so a donor cannot be AD in one analysis and MCI in another. Otherwise:
 #
 # | Cohort | Instrument |
 # |---|---|
@@ -243,14 +199,9 @@ print("pheno rules defined")
 # | Mayo | `diagnosis` == progressive supranuclear palsy → PSP; else keep `pheno` |
 # | MSBB, Diverse Cohorts | keep `pheno` — no independent specific diagnosis available |
 #
-# ROSMAP codes 4 and 5 are clinical AD-dementia. They map to `other`, not AD, because AD
-# here is neuropathological. `dcfdx_lv` is used over `cogdx` because it is far more complete.
-#
-# The two fields disagree for non-AD labels by design — they use different instruments.
-# An analysis that needs the strict set should use `pheno`.
-
-# In[7]:
-
+# ROSMAP codes 4/5 are clinical AD-dementia and map to `other`, not AD, because AD here is
+# neuropathological. `dcfdx_lv` over `cogdx`: far more complete. The two fields disagree for non-AD
+# labels by design; an analysis needing the strict set should use `pheno`.
 
 LATEST_DX_MAP = {
     "Parkinson's Disease": "PD",
@@ -311,9 +262,6 @@ print("dx_detailed rules defined")
 # Applied per cohort, with the resulting distributions printed so each one can be checked
 # against the raw instrument counts in §2.
 
-# In[8]:
-
-
 labels = {}
 for src, df in raw.items():
     p, d = derive(df, src)
@@ -345,9 +293,6 @@ for src, df in raw.items():
 # All five sources record sex as a word in a column named `sex` — lowercase in the AMP-AD
 # files, title-case in AMP-PD — so the map reads a lowercased value.
 
-# In[9]:
-
-
 CORE_COLUMNS = ["individual_id", "source_dataset", "sex", "projid", "pheno", "dx_detailed"]
 
 SEX = {"male": "1", "female": "2", "missing or unknown": "0"}
@@ -371,10 +316,6 @@ for src, df in raw.items():
 core = pd.concat(frames, ignore_index=True)
 print(f"\ncore: {len(core):,} rows x {core.shape[1]} cols")
 print(core.source_dataset.value_counts().to_string())
-
-
-# In[10]:
-
 
 for col in ("sex", "pheno", "dx_detailed"):
     print(f"=== {col} x source_dataset ===")
@@ -404,9 +345,6 @@ for col in ("sex", "pheno", "dx_detailed"):
 #
 # Adding a callset is one entry in `CALLSETS` plus one resolve function. A callset whose
 # `.psam` is not down yet is skipped with a note.
-
-# In[11]:
-
 
 projid2donor = dict(zip(raw["amp_ad_rosmap"]["projid"], raw["amp_ad_rosmap"]["individualID"]))
 mayo_donors = set(raw["amp_ad_mayo"]["individualID"])
@@ -517,9 +455,6 @@ print(genomes.rule.value_counts().to_string())
 #
 # Every row is a violation count. Zero is a pass; anything else stops the write in §9.
 
-# In[12]:
-
-
 # SEX_VALUES / PHENO_VALUES / DX_VALUES come from clinical_common — analysis_grain.py checks
 # against the same vocabulary, and a local copy here is how the two would silently diverge.
 
@@ -571,9 +506,6 @@ print(coverage.to_string())
 # Neither file is read by the pipeline — they are the durable record of how a sample
 # resolved to a donor, and the basis for anything produced later.
 
-# In[13]:
-
-
 if checks.violations.sum():
     raise AssertionError("invariants violated:\n"
                          + checks.query("violations > 0").to_string(index=False))
@@ -599,9 +531,6 @@ print(f"\nwritten to {rel(OUT)}")
 #
 # No sample is removed here. Column layout follows each `.psam`: callsets without an FID
 # get `#IID SEX`, `wb_dwgs` gets `#FID IID SEX`.
-
-# In[14]:
-
 
 sex_by_key = {(r.individual_id, r.source_dataset): r.sex for r in core.itertuples()}
 
@@ -645,27 +574,14 @@ print(f"\nwritten to {rel(OUT)} — step 1 reads them from here directly (config
 # grain, same `"|"`-joined callset for the fused dual-source samples — the grain simply adds
 # ancestry, sex, the conflict flags and the PCs on top of these columns.
 #
-# **Why it is a separate file.** Step 6's AF-concordance stage needs exactly `IID →
-# (source_callset, dx_detailed)`: it compares callsets only *within* a (stratum × dx) cell, so
-# disease is held constant and a between-callset frequency gap can only be technical. It never
-# reads a PC. But it used to be handed `analysis_grain.csv`, which cannot exist until §12 has
-# PCs from step 6 — and that produced the apparent cycle `grain ← §12 ← PCs ← step 6` which
-# forced step 6 to run twice with the AF build wedged between the passes.
+# **Why it is a separate file from the grain.** Step 6's AF-concordance stage needs exactly
+# `IID → (source_callset, dx_detailed)` and never reads a PC. Both columns are pure clinical
+# output, so writing them here — before any genotype step — is what lets step 6 run as one pass
+# instead of twice with the AF build wedged between. This section runs **unconditionally**.
 #
-# The cycle was an artifact of one CSV carrying two unrelated things. Both columns here are pure
-# clinical output — `source_callset` from §7's crosswalk, `dx_detailed` from §4's reconciliation —
-# and neither needs a single genotype step to have run. Splitting the file splits the dependency,
-# and step 6 collapses to one pass.
-#
-# This section therefore runs **unconditionally**, before any genotype step, unlike §11–13.
-#
-# The self-check below is the regression test for the split: where a grain already exists, every
-# IID it shares with this file must agree on both columns. A disagreement means the two
-# reconciliation paths have drifted and the exclusion list would change for a reason that has
-# nothing to do with the genotypes.
-
-# In[17]:
-
+# The self-check below is the regression test for that split: where a grain exists, every IID it
+# shares with this file must agree on both columns. A disagreement means the two reconciliation
+# paths have drifted, and step 6's exclusion list would change for a non-genotype reason.
 
 by_genome_annot = {}
 for r in genomes.itertuples():
@@ -752,9 +668,6 @@ if _grain_path.exists():
 # Mayo donors. That is a power argument for a sensitivity arm, not a reason to redefine the
 # primary phenotype.
 
-# In[20]:
-
-
 AD_SOURCES = ["amp_ad_rosmap", "amp_ad_mayo", "amp_ad_msbb", "amp_ad_divco"]
 ALT_COL = {"amp_ad_rosmap": "dcfdx_lv", "amp_ad_mayo": "diagnosis",
            "amp_ad_msbb": "CDR", "amp_ad_divco": "reag"}
@@ -766,10 +679,6 @@ for src in AD_SOURCES:
     print(pd.crosstab(labels[src]["pheno"].replace("", "(null)"),
                       raw[src][col].replace("", "(blank)").values, margins=True).to_string())
     print()
-
-
-# In[21]:
-
 
 # One explicit "AD by the alternative instrument" call per cohort. Each mapping is a
 # judgement — stated here rather than buried, because the MSBB one in particular is weak.
@@ -832,9 +741,6 @@ print(f"\ntotal AD genomes: derived={tot_d:,}  alternative={tot_a:,}  "
 # of both arms. Counting null *donors* overstates it — a donor with no genome contributes
 # nothing to a GWAS either way. The cell below counts both, and the gap is the point.
 
-# In[22]:
-
-
 ad = core[core.source_dataset.isin(AD_SOURCES)].copy()
 ad["has_genome"] = [(i, s) in has_genome for i, s in zip(ad.individual_id, ad.source_dataset)]
 
@@ -856,9 +762,6 @@ print(f"  {n_geno:,} / {tot_geno:,} genomes ({n_geno/tot_geno:.1%})   <- the num
 # Only the unclassifiable genomes are worth chasing. For each cohort this takes the
 # genome-carrying donors with a null `pheno` and asks what its alternative column says
 # about them: how many become classifiable, and into which arm.
-
-# In[23]:
-
 
 recovery = []
 for src in AD_SOURCES:

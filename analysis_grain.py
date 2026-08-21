@@ -3,8 +3,9 @@
 
 # # Analysis grain — the second half of the clinical side
 #
-# Runs ONCE, **after genetics step 6**. `clinical_core.py` runs once *before* step 1; this is
-# the other end of that round trip.
+# Runs ONCE, **after genetics step 6**. `clinical_core.py` runs once *before* step 1; this is the
+# other end of that round trip, and the round trip is irreducible: step 1 applies the sex files,
+# and the grain carries step 6's PCs because step 7 reads them as covariates.
 #
 # | § | Does | Needs |
 # |---|---|---|
@@ -12,23 +13,12 @@
 # | 12 | **in <-** ancestry + PCs, reconciled to one label per genome | step 6 |
 # | 13 | **out ->** per-ancestry covariate and per-contrast phenotype files | step 6 |
 #
-# **Why this is a separate file.** The clinical side genuinely has to run at two points: step 1
-# applies the sex-update files, and the grain carries step 6's PCs because step 7 reads them as
-# covariates. That round trip is irreducible — unlike step 6's old two passes, there is no
-# column to split out here.
-#
-# What was avoidable is running the *same script* twice. These sections used to live at the end
-# of `clinical_core.py`, so reaching them meant re-executing §1-10: re-reading eleven clinical
-# files, re-deriving every label, and rewriting the sex-update files that step 1 had already
-# consumed. Nothing checked that those rewrites still matched what genotools actually applied.
-#
-# §9's audit tables already hold everything needed here, so this file reads them and re-derives
-# nothing. `core` and `genomes` below are exactly the frames `clinical_core.py` held in memory.
+# It reads §9's audit tables and re-derives nothing. `core` and `genomes` below are exactly the
+# frames `clinical_core.py` held in memory — which is why this is a separate file rather than
+# sections at the end of that one, where reaching them meant rewriting the sex-update files step 1
+# had already consumed.
 #
 # **Guardrail.** Every cell prints aggregates. No cell prints a subject-level row.
-
-
-# In[1]:
 
 
 import pandas as pd
@@ -48,23 +38,13 @@ print(f"genome_crosswalk.csv  {len(genomes):,} rows")
 
 # ## 11. In ← QC outcomes
 #
-# After genetics steps 1–5, every sample has been kept or dropped for a stated reason:
-# genotools per-ancestry QC (call rate, sex-check, heterozygosity), duplicate resolution,
-# or 2nd-degree relatedness pruning. This attaches those outcomes to the clinical table so
-# a loss can be read per cohort and per phenotype arm rather than per callset alone.
-#
-# Reads two files produced by `05_excludelist.py`:
+# Attaches steps 1-5's keep/drop reasons to the clinical table, so a loss reads per cohort and per
+# phenotype arm rather than per callset. Consumes `05_excludelist.py`'s output; recomputes nothing.
 #
 # | File | Columns |
 # |---|---|
 # | `exclude_reasons.tsv` | `FID  IID  reason  detail` |
 # | `retained_manifest.csv` | `FID,IID,ancestry,call_rate,dup_cluster_id` |
-#
-# The picks themselves stay on the genotype side — they are call-rate-driven and operate on
-# KING kinship output. This section consumes them; it does not recompute them.
-
-# In[2]:
-
 
 if not EXCLUDE_REASONS.exists():
     print(f"SKIPPED — no exclude reasons at {rel(EXCLUDE_REASONS)}")
@@ -102,15 +82,11 @@ else:
 
 # ## 12. In ← ancestry and PCs → the analysis grain
 #
-# One row per retained genome, carrying the label the GWAS tests and the covariates it
-# adjusts for. Joins the retained manifest, the per-ancestry PCs from step 6, the genome
-# crosswalk from §7, and the donor table from §6. Those last two are `clinical_core.py`'s
-# sections; they arrive here as `individual_core.csv` and `genome_crosswalk.csv`, loaded at the
-# top of this file. Nothing is re-derived.
+# One row per retained genome: the label the GWAS tests and the covariates it adjusts for. Joins the
+# retained manifest, step 6's per-ancestry PCs, and §7/§6's audit tables. Nothing is re-derived.
 #
-# **Why reconciliation is needed.** A donor can appear in two source studies — once in
-# Diverse Cohorts and once in the ROSMAP/Mayo/MSBB trio — phenotyped by two different
-# programs that do not always agree. The grain is per genome, so each genome needs one label.
+# A donor can appear in two source studies — Diverse Cohorts and the ROSMAP/Mayo/MSBB trio —
+# phenotyped by programs that do not always agree, so each genome needs one reconciled label:
 #
 # | Field | Rule |
 # |---|---|
@@ -118,15 +94,10 @@ else:
 # | `dx_detailed` | pinned to `AD` when reconciled `pheno` is AD; otherwise prefer the trio's clinical instrument, falling back to Diverse Cohorts when the trio is null |
 # | `sex` | each genome takes **its own callset's** donor's sex — never reconciled |
 #
-# AD dominates because the AD label is neuropathological (§3, in `clinical_core.py`) and a pathology call outranks
-# a clinical one. `sex` is deliberately not reconciled: it is a property of the sequenced
-# sample, and disagreement is evidence of a sample swap worth keeping as a flag.
-#
-# Conflicts are flagged, never dropped — `pheno_conflict`, `dx_conflict`, `sex_conflict`
-# travel with the row so a sensitivity analysis can exclude them without rebuilding.
-
-# In[3]:
-
+# AD dominates because it is a neuropathological call and outranks a clinical one. `sex` is NOT
+# reconciled: it is a property of the sequenced sample, and disagreement is evidence of a swap.
+# Conflicts are flagged, never dropped — `pheno_conflict`/`dx_conflict`/`sex_conflict` travel with
+# the row so a sensitivity analysis can exclude them without rebuilding.
 
 eigenvecs = sorted(PCA_DIR.glob("cohort_*_pca.eigenvec")) if PCA_DIR.exists() else []
 
@@ -213,18 +184,12 @@ else:
 # (`wb_dwgs` or `br_dsnwgs`), `@ampad` the rest. Bare arms take any source. Both arms must
 # reach `MIN_ARM` for a file to be written.
 #
-# **The confound tag** measures how far apart the two arms are in AMP-PD share. The primary
-# contrast is confounded with callset by construction — AMP-AD supplies the AD cases, AMP-PD
-# the PD cases — so `delta_amppd` is the number that says how much of a result could be
-# cohort rather than disease. It is computed here, off `AMPPD_CALLSETS`, so adding a callset
-# updates it in one place.
+# **`delta_amppd`** is each contrast's gap in AMP-PD share — how much of a result could be cohort
+# rather than disease. Computed here off `AMPPD_CALLSETS`, so adding a callset updates it in one
+# place. It measures PROGRAM, not callset; see `max_callset_delta` below and METHODS.md §10.
 #
-# **`EXCLUDE_DUAL`** drops the samples that resolved to both `divco_hs` and `wgs_harm`, for a
-# WGS_Harm-only sensitivity run. It lives here rather than as a flag at GWAS time so that the
-# sensitivity variant is a recorded artifact you can point at, not a switch someone remembers.
-
-# In[4]:
-
+# **`EXCLUDE_DUAL`** drops samples resolving to both `divco_hs` and `wgs_harm`, for a WGS_Harm-only
+# sensitivity run. Here rather than a flag at GWAS time, so the variant is a recorded artifact.
 
 CONTRASTS = [
     ("PD", "AD"), ("PD", "DLB"), ("PD", "MCI"), ("PD", "PSP"), ("PD", "control"), ("PD", "other"),

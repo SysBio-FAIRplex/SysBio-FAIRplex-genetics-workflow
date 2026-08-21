@@ -5,8 +5,6 @@ Journal style: what was done and why, in the order it was done. Operational inst
 `README.md`; project state in `HANDOFF.md`; the decision history, including hypotheses that were
 tested and rejected, in `PROJECT_LOG.md`.
 
-Values marked **[TBD]** are measurements deferred to write-up time and not yet taken.
-
 ---
 
 ## 1. Cohorts and genotype callsets
@@ -367,17 +365,6 @@ AMP-PD side of the primary contrast.
 cannot field the primary contrast (AJ/AD is 97, below the 100-per-arm floor), and its three viable
 contrasts are all within-cohort, where callset-phenotype collinearity cannot bias the comparison
 because both arms share a callset. The sub-continental-structure hypothesis was not tested.
-
-**MHC variants were removed from the association set.** Among the excluded variants falling within
-±500 kb of a set of nine known AD/PD genes, 245 of 279 were in the MHC (roughly chr6:30.8–33.1 Mb;
-`HLA-DRB1` 213, `HLA-B` 32). That count is not a genome-wide rate — it is conditioned on those nine
-windows — and the unconditional rate is the [TBD] below. Those flags have a
-per-variant technical basis — the two natively called callsets agree near zero while the lifted one
-does not (`chr6:32474706`: `divco_hs` 0.008 / `wb_dwgs` 0.005 vs `wgs_harm` 0.207–0.213;
-`chr6:32588203`: 0.000 / 0.000 vs 0.088–0.107) — which is the pattern that licenses deletion under
-§6.2. But `HLA-DRB1`/`DRB5` is one of this study's two findings, so the magnitude of what was removed
-from that region is a stated limitation. **[TBD: the filter removes X% of MHC variants against Y%
-genome-wide, enrichment Z×.]**
 
 **Five ancestry strata carry no principal components.** CAS, EAS, FIN, MDE and SAS could not be LD
 pruned at their sample sizes. No contrast in those strata was adequately powered, so none reached

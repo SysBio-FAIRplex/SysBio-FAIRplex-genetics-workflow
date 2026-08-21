@@ -1,95 +1,42 @@
 #!/usr/bin/env python3
-"""Build the per-callset AF-concordance exclusion list for step 6.
+"""Build the per-callset AF-concordance exclusion list for step 6 stage B.
 
-WHY, measured on this cohort (2026-08-19, four-callset merge). Applying the list this script builds
-takes EUR's worst callset eta^2 from 0.757 to 0.036 -- a 95.2% reduction from excluding 0.058% of
-EUR's variants. So the callset separation in PC space IS variant-intrinsic and concentrated, and the
-flagged variants are ~7x enriched for duplicate-pair genotype discordance, where the true genotype
-is identical by construction. Technical breakage, not population structure and not disease.
+Full rationale, thresholds and measured effect: METHODS.md §6.
 
-SCOPE OF THAT RESULT -- IT DOES NOT GENERALISE ACROSS STRATA. The same list moves AJ only 0.984 ->
-0.962 (2.2%). AJ is never evaluated here: its largest same-dx callset pair is AJ/control at
-wgs_harm=44, under MIN_CELL, so the list carries no AJ-derived flags and EUR-derived flags do not
-transfer. AJ also shows no HWE excess (0.24x its chance expectation). Do not claim this filter
-addresses AJ; the leading hypothesis there is real sub-continental structure. See PROJECT_LOG.md.
+THE LICENCE TO DELETE, restated here because this is the only script in the project allowed to
+remove variants from the association set. Every comparison is made WITHIN a (stratum x dx) cell.
+Inside a cell disease is constant, so a true disease effect cannot produce a between-callset
+frequency difference and only technical breakage can. A filter comparing callsets over ALL samples
+would have no such protection: wgs_harm/divco_hs supply the AD cases and wb_dwgs the PD cases, so
+rs429358 differs sharply between them for an entirely real reason, and an all-samples filter would
+delete the strongest true locus in the study. Do not widen the comparison beyond the cell.
 
-An earlier version of this docstring cited `diag_af_crossstratum` for 147 EUR-flagged variants
-taking AJ's eta^2 from 0.748 to 0.055. That script is in no commit, and the claim is contradicted
-by the measurement above: 93.6% of the July list survives in the current one, so those 147 are
-almost certainly a subset of today's 4,415, and removing them plus 4,268 others moves AJ by 0.022.
-The 0.748 was EUR's baseline mislabelled as AJ's. Recorded so it is not resurrected.
+There is NO automated check on that licence, deliberately. What replaces it is reading this script's
+log — the BY CALLSET PAIR table and the per-cell HWE ratio table — and resolving anything that looks
+wrong against the per-cell .afreq/.snplist in af_concordance/, indexing BY HEADER NAME (column 5 of
+an .afreq is PROVISIONAL_REF?, not the frequency). Call rate is usually the tell, not frequency.
+To name the gene a variant sits in: python3 scripts/gene_annot.py --at <chr:pos>
 
-DISEASE HELD CONSTANT WITHIN EVERY COMPARISON, AND WHY THAT IS THE WHOLE DESIGN. wgs_harm/divco_hs
-supply the AD cases and wb_dwgs the PD cases, so the primary contrast is confounded with callset and
-a raw between-callset frequency difference has two possible causes: technical breakage, or a real
-disease effect. The diagnostic could ignore this because it ran on the LD-pruned PCA input, which
-happens to exclude APOE. A GENOME-WIDE filter has no such protection — rs429358 differs sharply
-between AD-source and PD-source samples for an entirely real reason, and an all-samples filter would
-delete the strongest true locus in the study.
+TIMING: step 6 applies this list at stage C, later in the SAME job that builds it here at stage B.
+Nothing here can gate. Resolve anomalies before step 7 reads the association set.
 
-So every comparison here is made WITHIN a (stratum x dx) cell. Inside a cell, disease is constant,
-so a true disease effect cannot produce a between-callset difference and only technical breakage
-can. Two cells carry most of the weight:
+TWO CHANNELS, unioned, with the overlap reported:
+  frequency  plink --assoc on callset membership; flag needs BOTH |dAF| > --thresh AND z > --zmin
+  HWE        within each callset, controls only, gated on exceeding chance expectation per cell
 
-  controls  wb_dwgs vs wgs_harm vs divco_hs   the wgs_harm<->wb_dwgs axis that drives PC1
-  AD cases  wgs_harm vs divco_hs              lifted vs NATIVE, disease matched by construction
+CONTROLS ONLY for the HWE channel, for the same reason as the cell design and the reason GenoTools
+sets filter_controls=True: case ascertainment genuinely distorts HWE at a real disease locus, so
+running it over an AD-case-heavy callset would flag APOE for an entirely real reason. keep-fewhet is
+retained — mismapping produces het EXCESS, which is still caught, while het deficiency (which
+pooling and substructure create artificially) is spared.
 
-The flags are unioned across cells. Note this is not selection on the outcome: cells are internally
-disease-constant, and the list is applied to a case-vs-case contrast.
+SCOPE: applied to the ASSOCIATION set, not just the PCA input. A variant mismapped badly enough to
+bend PC1 also produces a spurious association in the test itself, where no PC adjustment reaches it.
 
-THE TEST IS PLINK'S. Each pair is compared with `plink --assoc` on callset membership as the
-phenotype — the standard 1-df allelic chi-square on the 2x2 allele-count table. It was a Python
-two-sample test of proportions with pooled variance until 2026-08-20; that is the same statistic by
-algebra (z^2 = chi^2), and the swap was verified to change nothing: on the largest cell (EUR/AD,
-7,538,809 variants) both flagged 1,698 with a symmetric difference of 0 in both directions. The
-reason to prefer plink's is communication — a named, recognisable test needs no defending, while a
-hand-rolled one has to be taken on trust. See assoc_pair().
-
-NOISE CALIBRATION. A significance threshold alone is sample-size dependent — a 120-sample cell
-throws far more noise flags than a 3,000-sample one, which would over-filter small cells AND make
-the pairwise rates incomparable for the liftover question below. A variant is flagged only if it
-clears BOTH |dAF| > --thresh AND z > --zmin, the latter read off .assoc's P column as
-P < erfc(zmin/sqrt2) — the same rule, but P is the only column printed precisely enough to decide
-it at the boundary (see assoc_pair). The floor is absolute rather than relative,
-deliberately: at MAF ~20% significance already requires |dAF| ~ 0.14 so the floor never binds, while
-at MAF ~2% it is reachable at ~0.035 — a large relative discordance that is nonetheless KEPT,
-because a filter licensed to delete should err toward keeping.
-
-SCOPE. Applied to the ASSOCIATION set, not just the PCA input. A variant mismapped badly enough to
-bend PC1 produces a spurious association in the test itself, where no PC adjustment reaches it.
-
-WHAT THE PAIRWISE ROLLUP DECIDES. divco_hs vs wb_dwgs is BOTH-NATIVE. If it diverges as badly as the
-wgs_harm pairs, the mechanism is calling/mapping, no liftover change could fix it, and step 0 stays
-closed. If only the wgs_harm pairs diverge, the breakage is liftover-specific.
-
-SECOND STAGE — PER-CALLSET HWE (the GenoTools `--all_variant` equivalent). The frequency test above
-is effect-based: it sees that two callsets disagree, without knowing why. HWE is mechanism-based. A
-mismapped variant pools reads from two near-identical genomic locations, which inflates
-heterozygosity and breaks Hardy-Weinberg *in the callset carrying the error*. Step 6 computes HWE
-POOLED across callsets at 1e-6, so a deviation confined to wgs_harm (~1,540 of ~9,800 EUR samples)
-is averaged against a clean majority before the test sees it. Here it runs within each callset, at
-GenoTools' 1e-4.
-
-CONTROLS ONLY, for the same reason as above and the reason GenoTools sets filter_controls=True:
-case ascertainment genuinely distorts HWE at a real disease locus, so running this over an
-AD-case-heavy callset would flag APOE for an entirely real reason. Restricting to controls removes
-that channel. keep-fewhet is retained — mismapping produces het EXCESS, which is still caught, while
-het deficiency (which pooling and substructure create artificially) is spared.
-
-The two stages are unioned into one exclusion list, and the overlap is reported: HWE independently
-re-finding the frequency-flagged variants is a mechanism-based confirmation of an effect-based test.
-
-WHAT THIS READS, AND WHY IT IS NOT THE GRAIN ANY MORE. This script needs exactly one mapping:
-IID -> (source_callset, dx_detailed). Nothing else. It never reads a PC, and it never reads an
-ancestry column either — the stratum comes from WHICH cohort_<ANC>_qc fileset a sample appears
-in, and the comparison cells are keyed (dx x callset). It used to take analysis_grain.csv purely
-because that is the file which happens to carry dx and the PCs together, and that accident was
-read as a dependency: it produced the claimed cycle "grain <- §12 <- PCs <- step 6", which forced
-step 6 to run twice with this script wedged between the passes. Both fields are pure clinical
-output available before step 1 runs, so §12a now writes them as sample_annot.csv and step 6 is a
-single pass. --grain is still accepted as an alias: the reader keys on column NAMES, and the
-grain carries the same two names, so pointing this at either file gives an identical result. That
-equivalence is the regression test for the split.
+READS exactly IID -> (source_callset, dx_detailed), from sample_annot.csv. Never a PC, never an
+ancestry column — the stratum comes from which cohort_<ANC>_qc fileset a sample appears in.
+--grain is accepted as an alias: the reader keys on column NAMES and the grain carries the same two,
+so either file gives an identical result. That equivalence is the regression test for the split.
 
 GUARDRAIL: human-run. Reads the id-bearing sample annotation and genotypes via plink2, writes the
 exclusion list, prints ONLY aggregate counts.
@@ -104,21 +51,10 @@ import shutil
 import subprocess
 import sys
 
-# NO SENTINEL-LOCUS TRIPWIRE HERE, DELIBERATELY — removed 2026-08-20, and it should not come back.
-# It reported which flagged variants fell in a hand-picked 9-gene set. Three reasons it went:
-#   1. It gated nothing. Stage C of step 6 applies this list later in the SAME job, so the tripwire
-#      was a report printed after the fact, never a checkpoint.
-#   2. It was a census, not a tripwire — 279 hits across 8 loci and ~1,700 lines of per-arm tables
-#      on its first run against corrected coordinates. 245 of the 279 were MHC.
-#   3. The 9-gene set had no citation behind it, so it scrutinised a handful while the other ~4,100
-#      flagged variants got none, and it could print a NEGATIVE ("no flagged variant falls in a
-#      sentinel locus") that no evidence supported. Either every deletion needs justification or
-#      none does.
-# The aggregate question it was groping at — "is this filter disproportionately hitting known
-# loci?" — is answered per-variant by the BY CALLSET PAIR table plus the per-arm frequencies, which
-# is what actually settled CR1 (dropout) and LRRK2 (the HWE excess-over-chance defect). See
-# PROJECT_LOG.md 2026-08-20. To ask "what gene is this variant in", use the gene_annot.py CLI:
-#     python3 scripts/gene_annot.py --at chr12:39977709
+# NO SENTINEL-LOCUS TRIPWIRE HERE, DELIBERATELY — removed 2026-08-20; do not reintroduce it. A
+# hand-picked gene list scrutinises a handful of deletions while thousands get none, and lets a
+# NEGATIVE be printable that no evidence supports. Per-variant is the honest form of the question:
+# the BY CALLSET PAIR table plus gene_annot.py --at. Full argument in PROJECT_LOG.md 2026-08-20.
 def run(cmd):
     """plink2 with output captured. stderr=STDOUT because capture_output alone hides plink's
     errors entirely (documented gotcha) — a silent failure here would look like a real result."""
@@ -186,10 +122,8 @@ def assoc_pair(qc, work, fid, anc, dx, x, ids_x, y, ids_y, a):
     asymptotically equivalent, not identical, so it would have moved the flags and cost us the
     verification above). Both shell wrappers therefore load MOD_PLINK1 unconditionally.
     """
-    # The .pheno file below IS the arm membership record — both arms, one per line, 2=x and 1=y —
-    # so it is what to read when a flagged variant needs resolving by hand. Per-arm .keep files
-    # used to be written here as well; they duplicated that membership and existed only to feed the
-    # deleted sentinel_detail(). `--assoc` needs the pheno file and nothing else.
+    # The .pheno file IS the arm membership record (2=x, 1=y, one per line) — read it when a
+    # flagged variant needs resolving by hand. `--assoc` needs it and nothing else.
     ph = work / f"{anc}_{dx}_{x}__vs__{y}.pheno"
     # plink1.9 case/control coding: 2 = case, 1 = control. Which arm is which is arbitrary —
     # |F_A - F_U| and CHISQ are both symmetric.
@@ -199,15 +133,10 @@ def assoc_pair(qc, work, fid, anc, dx, x, ids_x, y, ids_y, a):
     run([a.plink1, "--bfile", str(qc), "--keep", str(ph), "--pheno", str(ph),
          "--assoc", "--allow-no-sex", "--out", str(stem)])
 
-    # THRESHOLD ON P, NOT ON CHISQ, and the reason is printed precision rather than statistics.
-    # `z > zmin`  <=>  1-df chi-square > zmin^2  <=>  two-sided normal P < erfc(zmin/sqrt2), so all
-    # three are the same rule. But .assoc prints CHISQ to four SIGNIFICANT figures, so a true
-    # 25.005 lands on disk as "25" and `25.0 > 25` is false. That cost exactly one variant on the
-    # first verification run — chr6:32555808:T:C, in the MHC, EUR controls, |dAF| = 0.107 with
-    # z = 5.0005 — which the Python implementation had flagged and this one silently dropped.
-    # P is printed to four significant figures too, but it is exponential, so near the boundary it
-    # carries ~1000x the resolution: 5.719e-07 pins chi-square to ~0.001 where "25" pins it only
-    # to 0.005. Reading the decision off the coarser column was the whole discrepancy.
+    # THRESHOLD ON P, NOT ON CHISQ. The three forms are algebraically the same rule, but .assoc
+    # prints CHISQ to four SIGNIFICANT figures, so a true 25.005 lands on disk as "25" and
+    # `25.0 > 25` is false. P is exponential and carries ~1000x the resolution at the boundary.
+    # Switching back to CHISQ silently drops boundary variants — it cost one on the first run.
     p_max = math.erfc(a.zmin / 2 ** 0.5)
     tested, bad = set(), set()
     with open(f"{stem}.assoc") as fh:
@@ -232,14 +161,10 @@ def assoc_pair(qc, work, fid, anc, dx, x, ids_x, y, ids_y, a):
     return tested, bad
 
 
-# A per-arm ALT-frequency + CALL-RATE printer (sentinel_detail) lived here until 2026-08-20 and was
-# deleted with the tripwire that called it. Its one durable lesson is worth keeping even though the
-# code is not: CALL RATE, not frequency, is what resolves these hits. CR1 was excluded because
-# divco_hs called it in 156 of 242 alleles (64.5%) while the same samples were 242/242 at the LRRK2
-# site — non-random dropout, a mechanism. The frequency gap alone was only its shadow, and reading
-# the .afreq columns POSITIONALLY (plink2 puts PROVISIONAL_REF? at column 5) is what hid the number
-# on the first attempt. When a flagged variant needs resolving, run --freq per arm over the
-# af_concordance/ intermediates by hand, index by header name, and look at OBS_CT.
+# RESOLVING A FLAGGED VARIANT: CALL RATE is the tell, not frequency. Run --freq per arm over the
+# af_concordance/ intermediates, index BY HEADER NAME (plink2 puts PROVISIONAL_REF? at column 5,
+# which is what hid this the first time), and look at OBS_CT. CR1 was excluded because divco_hs
+# called it in 156 of 242 alleles while the same samples were 242/242 at the LRRK2 site.
 
 
 def main():
@@ -255,13 +180,9 @@ def main():
                          "also works — same column names — and the two must agree")
     ap.add_argument("--out", required=True, help="exclusion list to write")
     ap.add_argument("--work", required=True)
-    # BOTH BINARIES, BY ABSOLUTE PATH, because they cannot both be on PATH. On biowulf `plink` and
-    # `plink2` are one module family: `module load plink/1.9.0-beta4.4` UNLOADS plink/6-alpha
-    # ("plink/6-alpha => plink/1.9.0-beta4.4") and leaves a non-executable plink2 earlier on PATH,
-    # so a bare "plink2" then dies with PermissionError. This bit the first --assoc run
-    # (2026-08-20): the frequency stage passed and the next plink2 call failed. It was latent
-    # before that too — the old `MISHAP != 0` conditional load would have broken plink2 for every
-    # stratum after the first, and only escaped notice because MISHAP defaults to 0.
+    # BOTH BINARIES, BY ABSOLUTE PATH — they cannot both be on PATH. On biowulf plink and plink2
+    # are one module family, so loading plink/1.9 UNLOADS plink/6-alpha and leaves a
+    # non-executable plink2 earlier on PATH; a bare "plink2" then dies with PermissionError.
     ap.add_argument("--plink1", default="plink",
                     help="plink1.9 binary — used for --assoc and --test-mishap. Pass an absolute "
                          "path; the shell wrappers resolve it while that module is loaded")
@@ -311,9 +232,8 @@ def main():
     ap.add_argument("--dx", nargs="+", default=None, help="default: every dx meeting --min-cell")
     a = ap.parse_args()
 
-    # Fail here, not 40 minutes in. The first --assoc run died at the FIRST plink2 call after the
-    # frequency stage had already succeeded, because loading the plink1.9 module had swapped
-    # plink/6-alpha off PATH — a PermissionError from deep inside subprocess, three stages late.
+    # Fail here, not 40 minutes in: the PATH clash above surfaces as a PermissionError from deep
+    # inside subprocess, three stages late.
     for label, exe in (("--plink1", a.plink1), ("--plink2", a.plink2)):
         if not (os.path.isabs(exe) or shutil.which(exe)):
             sys.exit(f"{label}={exe} is not executable and not on PATH. plink and plink2 are ONE "
@@ -362,11 +282,10 @@ def main():
                 anc_vars.add(line.split()[1])
         universe |= anc_vars
 
-        # (dx, callset) -> members, restricted to samples actually in this fileset.
-        # Note where the stratum comes from: `anc` is the loop variable over filesets, never a
-        # column. An IID absent from the annotation is skipped rather than pooled into a blank
-        # cell — an unlabelled sample has no disease to hold constant, so it cannot participate
-        # in a comparison whose whole validity rests on disease being constant.
+        # (dx, callset) -> members, restricted to samples in this fileset. The stratum is `anc`,
+        # the loop variable over filesets — never a column. An IID absent from the annotation is
+        # SKIPPED, not pooled into a blank cell: an unlabelled sample has no disease to hold
+        # constant, so it cannot join a comparison whose validity rests on disease being constant.
         cell = defaultdict(list)
         n_unannotated = 0
         for iid in fid:

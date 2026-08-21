@@ -1,111 +1,57 @@
 #!/bin/bash
 #SBATCH --job-name=ancestry_qc
 #SBATCH --time=10:00:00
-# MEASURED, not guessed: the 2026-07-24 run took ~2.5 h wall for all 11 strata — a flat ~13-14 min
-# each, because cost is dominated by scanning cohort_merged (171M x 13,237 = ~527 GiB .bed), which
-# every stratum pays regardless of how many samples it keeps. EUR (9.8k samples) cost barely more
-# than CAH (71).
-#
-# 10 h rather than the old 6 h because this script now does in ONE job what used to be three
-# submissions (step 6, af_concordance_build, step 6 again). The extra work is NOT another merged
-# scan — stage A pays that once and stages C/D read stratum-sized filesets — so the increment is
-# the AF build plus a second prune+PCA, not a second pass.
+# MEASURED: ~13-14 min per stratum x 11, dominated by scanning cohort_merged (~527 GiB .bed), which
+# every stratum pays regardless of how many samples it keeps. 10 h covers the AF build and the
+# second prune+PCA on top of that; stage A pays the merged scan once.
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=160G
 #SBATCH --partition=norm
 #
-# STEP 6 — per-ancestry variant QC + within-ancestry PCA, in a SINGLE pass.
-# Produces the GWAS-ready grain: one QC'd genotype set + PCs per ancestry stratum.
+# STEP 6 — per-ancestry variant QC + within-ancestry PCA, in a SINGLE pass. Produces the GWAS-ready
+# grain: one QC'd genotype set + PCs per ancestry stratum. Rationale: METHODS.md §5-6.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# WHY THIS IS ONE PASS NOW (it used to be two, with a hand-run script between them)
-#
-# The old shape was: run step 6 unfiltered -> run af_concordance_build against its output ->
-# run step 6 AGAIN to apply the resulting exclusion list. That was justified by a claimed
-# circular ordering: the AF build needs the analysis grain, the grain needs §12, §12 needs the
-# PCs, and the PCs are step 6's output. Two facts dissolve it.
-#
-#   1. THE AF BUILD NEVER NEEDED THE GRAIN. It reads exactly IID -> (source_callset,
-#      dx_detailed) and builds its comparison cells as (dx x callset); the stratum comes from
-#      which fileset a sample is in, not from any column. Both fields are pure clinical output,
-#      available from §7's crosswalk and §4's reconciliation before step 1 runs. They only ever
-#      arrived via the grain because the grain is the file that happens to carry dx and the PCs
-#      in one CSV. §12a now writes them separately as sample_annot.csv, and the cycle is gone.
-#
-#   2. THE QC PASS NEVER NEEDED RE-RUNNING. --geno, --maf and --hwe are per-variant statistics
-#      computed on a fixed sample set (there is no --mind here), so they COMMUTE with --exclude:
-#      QC-then-exclude and exclude-then-QC give the identical variant set. Pass 2's expensive
-#      re-scan of cohort_merged was recomputing numbers it already had. Stage C therefore applies
-#      the exclusion to stage A's output instead, reading a stratum-sized fileset rather than
-#      527 GiB. This is the same identity the 2026-08-19 premise test relied on.
-#
-# So: QC once, build the list from that, apply it, prune and PCA on both. What used to be a
-# two-submission sequence with a mandatory `mv` between the passes is one submission with no
-# manual step and no one-way door.
-#
-# ─────────────────────────────────────────────────────────────────────────────
 # STAGES
+#   A  per ANC: extract + variant QC from cohort_merged  -> unfiltered/cohort_<ANC>_qc
+#      per ANC: LD-prune + PCA on that                   -> unfiltered/cohort_<ANC>_pca
+#              The BASELINE, and a permanent named output — not something you must remember to
+#              preserve before the filtered run overwrites it.
+#   B  build the AF-concordance exclusion list FROM THE UNFILTERED filesets. Building it from
+#              unfiltered input is not incidental: the old ordering derived each list from a
+#              directory that already had the previous list applied, so the filter's input was
+#              pre-filtered by its own output and looked clean either way.
+#   C  per ANC: --exclude the list                       -> cohort_<ANC>_qc   (ASSOCIATION set)
+#   D  per ANC: LD-prune + PCA on the filtered set       -> cohort_<ANC>_pca  (COVARIATES)
+#   E  both retained_samples_manifest.csv files, so review/plot_af_filter_effect.py has both
+#      generations from one job.
 #
-#   A  per ANC: extract + variant QC from cohort_merged   -> unfiltered/cohort_<ANC>_qc
-#      per ANC: LD-prune + PCA on that                    -> unfiltered/cohort_<ANC>_pca
-#              This is the BASELINE, and it is a permanent named output. It is not something
-#              you have to remember to preserve before the filtered run overwrites it — that
-#              requirement is exactly what made the old step 6 a one-way door.
+# Stage C applies the list to stage A's output rather than re-scanning cohort_merged: --geno/--maf/
+# --hwe are per-variant on a fixed sample set (no --mind here), so they COMMUTE with --exclude.
 #
-#   B  build the AF-concordance exclusion list FROM THE UNFILTERED filesets.
-#              Building it from unfiltered input is not incidental. The old ordering derived
-#              each list from a directory that already had the previous list applied, so the
-#              filter's input was pre-filtered by its own output and looked clean either way.
-#              Here the input generation is fixed by construction.
+# INPUT: cohort_merged + step 5's retained_manifest.csv + clinical_core's sample_annot.csv. The
+# excludelist is applied by keeping only retained samples — dropped dups/relatives/QC-fails are
+# absent from the manifest, so no --remove is needed.
 #
-#   C  per ANC: --exclude the list                        -> cohort_<ANC>_qc   (the ASSOCIATION set)
-#   D  per ANC: LD-prune + PCA on the filtered set        -> cohort_<ANC>_pca  (the COVARIATES)
-#   E  assemble both retained_samples_manifest.csv files (unfiltered + filtered) so the
-#      before/after eta^2 comparison in review/plot_af_filter_effect.py has both generations.
+# LONG-RANGE LD IS EXCLUDED AT THE PRUNE STEP ONLY, never from the association set. Pruning alone
+# does not neutralize the MHC or the big inversions — enough correlated structure survives
+# --indep-pairwise for them to dominate a top PC, which then encodes inversion/HLA haplotype instead
+# of ancestry and propagates into every GWAS as a covariate. But 17q21.31 is MAPT and the MHC is a
+# real AD locus, so masking them from ASSOCIATION would delete the signals we most expect to find.
+# The BED ships at ref/highld_exclude_hg38.bed; rsync it to $REF_DIR before running (README §2). If
+# absent the run continues WITHOUT the exclusion and says so loudly.
 #
-# INPUT  : cohort_merged + step 5's retained_manifest.csv + clinical_core's sample_annot.csv
-#          (the excludelist is applied simply by keeping only retained samples — dropped
-#           dups/relatives/QC-fails are absent from the manifest, so no --remove is needed).
-# PER ANC: 1. keep-list from the manifest (FID IID where ancestry==ANC)
-#          2. extract + VARIANT QC in one plink2 pass (autosomes):
-#               --geno 0.05  (variant call rate >=95%, computed WITHIN the stratum -> naturally
-#                             drops variants not genotyped across the callsets present in ANC)
-#               --maf 0.01   (common-variant GWAS; a rare/burden set would be a separate pass)
-#               --hwe 1e-6 keep-fewhet  (remove excess-het genotyping artifacts; keep het-deficient
-#                             real signal). HWE is ancestry-specific -> must run within stratum.
-#          3. LD-prune (--indep-pairwise 1000kb 1 0.1) EXCLUDING long-range-LD/inversion
-#             regions -> PCA input ONLY. The kb window is deliberate: a variant-count window
-#             covers far too little physical distance at WGS marker density.
-#          4. PCA on the pruned set (--pca 10; capped for tiny strata) -> eigenvec/eigenval
-#     NOTE: the ASSOCIATION set is the full QC-passing variants; the LD-pruned set is used ONLY
-#           for PCA (standard practice).
-#     LONG-RANGE LD: pruning alone does not neutralize the MHC or the big inversions — enough
-#           correlated structure survives --indep-pairwise for them to dominate a top PC, which
-#           then encodes inversion/HLA haplotype instead of ancestry and propagates into every
-#           GWAS as a covariate. The exclusion is applied at the PRUNE step only, so it shapes
-#           the PCA input and never the association set. This matters concretely: 17q21.31 is
-#           MAPT (top PSP locus, major PD locus) and the MHC is a real AD locus — masking them
-#           from association would delete the signals we most expect to see.
-#           The BED ships in this bundle at ref/highld_exclude_hg38.bed — rsync it to
-#           $REF_DIR before running (README §2). If absent the run continues WITHOUT the exclusion and
-#           says so loudly, rather than failing the whole grain.
-#
-# DECISIONS (locked 2026-07-23): run ALL 11 strata (no min-n gate — the >=100-cases GWAS-viability
-#   selection is post-hoc at the phenotype boundary). Autosomes only (chrX is a separate later job
-#   needing --merge-par + sex-aware handling). Relatives (<=2nd deg) already removed in step 5, so
-#   PCA runs on an unrelated set -> clean PCs.
+# Autosomes only (chrX needs --merge-par + sex-aware handling, a separate job). All 11 strata run;
+# the >=100-per-arm viability cut is post-hoc at the phenotype boundary.
 #
 # KNOBS
-#   AF_EXCLUDE=none     run the whole step unfiltered on purpose (stages B-D skip the exclusion).
-#   SKIP_AF_BUILD=1     reuse the exclusion list already on disk instead of rebuilding it.
-#   FORCE_QC=1          rebuild stage A even when a valid unfiltered fileset is already present.
-#   HWE_REQUIRE_EXCESS=0  let every HWE cell contribute exclusions regardless of whether its
-#                       rejection count exceeds chance expectation — the pre-2026-08-20 behaviour,
-#                       kept because it is what reproduces the 4,415-variant list.
+#   AF_EXCLUDE=none       run the whole step unfiltered on purpose (stages B-D skip the exclusion).
+#   SKIP_AF_BUILD=1       reuse the exclusion list on disk instead of rebuilding it.
+#   FORCE_QC=1            rebuild stage A even when a valid unfiltered fileset is present.
+#   HWE_REQUIRE_EXCESS=0  pre-2026-08-20 behaviour: every HWE cell votes regardless of whether its
+#                         rejection count exceeds chance. Kept because it reproduces the 4,415 list.
 #   plus every af_concordance_build knob (THRESH, ZMIN, MIN_CELL, HWE, MISHAP, ...) — passed through.
 #
-# GUARDRAIL: sbatch script, run by the user (reads genotypes = "the machine"). The AI writes it only.
 #   ./submit.sh scripts/06_ancestry_qc.sh
 set -o pipefail
 

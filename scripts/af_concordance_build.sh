@@ -8,18 +8,10 @@
 #
 # Build the per-callset AF-concordance exclusion list.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# YOU PROBABLY DO NOT NEED TO SUBMIT THIS. Step 6 runs it as stage B, in-job, between its
-# unfiltered QC and the filtered association set. That is the supported path and it is a single
-# submission. This wrapper survives for one purpose: re-deriving the list at DIFFERENT knobs
-# (THRESH, ZMIN, MIN_CELL, HWE, MISHAP) against an existing stage-A output, without paying for
-# another scan of cohort_merged. Having tuned them, re-run step 6 with SKIP_AF_BUILD=1 to apply
-# the result.
-#
-# The file was formerly numbered 06a, and the ORDER block here used to read "run this, then run
-# step 6 again". Both encoded a two-pass pipeline that no longer exists — see the header of
-# 06_ancestry_qc.sh for why the ordering it was built around was never actually circular.
-# ─────────────────────────────────────────────────────────────────────────────
+# YOU PROBABLY DO NOT NEED TO SUBMIT THIS. Step 6 runs it as stage B, in-job — that is the
+# supported path, and a single submission. This wrapper exists only to re-derive the list at
+# DIFFERENT knobs against an existing stage-A output, without another scan of cohort_merged.
+# Having tuned them, re-run step 6 with SKIP_AF_BUILD=1 to apply the result.
 #
 # Three stages, unioned:
 #   1. AF concordance — callsets compared only WITHIN a (stratum x dx) cell, which holds disease

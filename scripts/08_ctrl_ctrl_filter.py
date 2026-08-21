@@ -1,42 +1,29 @@
 #!/usr/bin/env python3
 """STEP 8 — annotate every contrast with the control-vs-control result, and emit a filtered copy.
 
-WHY. The primary contrast is confounded with callset: AMP-AD supplies the AD cases, AMP-PD the PD
-cases. Step 6a removes the variants where that confound is visible at the genotype level, but no
-filter is complete. `control@amppd` vs `control@ampad` has no true disease signal by construction —
-both arms are non-cases — so anything genome-wide significant there is cohort artifact that survived
-6a. This is the demo's step 13 (`AD_versus_PD_GWAS.sh`), which subtracts those variants from the
-case-vs-case results.
+Rationale and the confirming measurement: METHODS.md §8.
 
-WHY IT ANNOTATES RATHER THAN OVERWRITES. The two control groups are differentially screened for the
-disease we are testing. AMP-AD controls are assessed as cognitively normal; AMP-PD controls are
-screened as "No PD Nor Other Neurological Disorder" — i.e. screened for PD, not for AD. So AD risk
-alleles are genuinely depleted in the AMP-AD control arm, and APOE is expected to reach significance
-in the control-vs-control scan for an entirely real reason. Subtracting it destructively would
-delete the strongest true locus in the study, which is very likely why the demo reports APOE from
-its unfiltered sumstats and keeps the filtered set as a separate file.
+`control@amppd` vs `control@ampad` has no true disease signal by construction, so anything
+genome-wide significant there is a candidate cohort artifact that survived step 6a.
 
-So this writes `.ccfilt.tsv` alongside the primary and never modifies it, and adds a CTRL_P column
-to a `.ccannot.tsv` so any hit can be judged individually. `.ccannot.tsv` is the artifact to read:
-every flagged variant is there with its control-vs-control P, which is what lets a reader decide
-per-variant whether a hit is the screening asymmetry or a real batch effect.
+IT ANNOTATES AND NEVER OVERWRITES, and the reason is an entitlement, not caution. The two control
+groups are differentially screened for the disease being tested: AMP-AD controls are assessed as
+cognitively normal, AMP-PD controls as "No PD Nor Other Neurological Disorder" — screened for PD,
+not for AD. AD risk alleles are therefore genuinely depleted in the AMP-AD control arm, and APOE is
+EXPECTED to reach significance here for an entirely real reason. Confirmed 2026-08-21: all four
+flagged hits in EUR AD_ampad_vs_control_ampad are APOE, including rs429358 at P=3.55e-15.
+Subtracting destructively would delete the study's strongest true locus.
 
-NO SENTINEL-LOCUS REPORT HERE, DELIBERATELY — removed 2026-08-20 together with 6a's. It listed
-which flagged variants fell in a hand-picked 9-gene set, and the fatal problem was the NEGATIVE it
-could print: "no known AD/PD locus among the flagged", off a list with no citation behind it, reads
-as reassurance that the flags are safe to subtract. With 9 genes that statement is close to
-meaningless — a flagged variant sitting on a real locus outside the set produced exactly the same
-output. That is the failure this file's own history warns about (it once carried a hardcoded window
-table covering 37% of CR1 and naming no HLA gene at all, so it could report "no known locus
-flagged" while sitting on HLA-DRB1); resolving the coordinates from refFlat narrowed that hole
-without closing it. The ±500 kb flanks also mislabel: none of the 21 variants reported under
-"LRRK2±500kb" on 2026-08-20 were in LRRK2 — they were in SLC2A13 and C12orf40, 240-435 kb away.
+So this writes `.ccfilt.tsv` alongside the primary and never modifies it, and adds CTRL_P to
+`.ccannot.tsv`. `.ccannot.tsv` is the artifact to read — every flagged variant with its
+control-vs-control P, so a hit can be judged per-variant rather than in bulk.
 
-Nothing is lost, because the warning that block existed to deliver does not depend on a gene list
-and is printed unconditionally below: the control arms differ by disease SCREENING, not only by
-batch, so `.ccfilt.tsv` is a sensitivity analysis and never the primary result. To name the gene a
-specific hit sits in, use the gene_annot.py CLI, which is unarbitrary and correctly labelled:
-    python3 scripts/gene_annot.py --at chr19:44908684
+NO SENTINEL-LOCUS REPORT HERE, DELIBERATELY — removed 2026-08-20; do not reintroduce it. The fatal
+problem was the NEGATIVE it could print: "no known AD/PD locus among the flagged", off an uncited
+9-gene list, reads as reassurance that the flags are safe to subtract, and a flagged variant on a
+real locus outside those 9 produced identical output. Nothing was lost — the substantive warning
+does not depend on a gene list and is printed unconditionally below. To name the gene a specific hit
+sits in:  python3 scripts/gene_annot.py --at chr19:44908684
 
 GUARDRAIL: reads summary statistics only — no genotypes, no sample IDs. Prints aggregate counts.
 """
