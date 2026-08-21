@@ -100,6 +100,9 @@
 #   AF_EXCLUDE=none     run the whole step unfiltered on purpose (stages B-D skip the exclusion).
 #   SKIP_AF_BUILD=1     reuse the exclusion list already on disk instead of rebuilding it.
 #   FORCE_QC=1          rebuild stage A even when a valid unfiltered fileset is already present.
+#   HWE_REQUIRE_EXCESS=0  let every HWE cell contribute exclusions regardless of whether its
+#                       rejection count exceeds chance expectation — the pre-2026-08-20 behaviour,
+#                       kept because it is what reproduces the 4,415-variant list.
 #   plus every af_concordance_build knob (THRESH, ZMIN, MIN_CELL, HWE, MISHAP, ...) — passed through.
 #
 # GUARDRAIL: sbatch script, run by the user (reads genotypes = "the machine"). The AI writes it only.
@@ -283,19 +286,36 @@ else
                            echo "  Run clinical_core.py (§12a writes it; no PCs needed)." >&2; exit 1; }
     module load "${MOD_PYTHON}"
     source "${VENV}/bin/activate"
-    [[ "${MISHAP:-0}" != "0" ]] && module load "${MOD_PLINK1}"   # --test-mishap is plink1.9 only
+
+    # Stage B needs BOTH plink generations — `plink --assoc` for the frequency test (plink2
+    # dropped --assoc for --glm, which is logistic on dosage: asymptotically equivalent, not
+    # identical) and plink2 for --hwe/--freq. They are ONE MODULE FAMILY here, so loading
+    # MOD_PLINK1 unloads MOD_PLINK2 and leaves a non-executable plink2 on PATH; that is how the
+    # first --assoc run died, with a PermissionError three stages in.
+    #
+    # So: resolve both to absolute paths, hand them to the python, and then RELOAD MOD_PLINK2 —
+    # because stages C and D below call bare `plink2`, and leaving plink1.9 active here would
+    # break them several minutes after this stage reported success.
+    PLINK2_BIN=$(command -v plink2)
+    module load "${MOD_PLINK1}"; PLINK1_BIN=$(command -v plink)
+    module load "${MOD_PLINK2}"          # restore plink2 for stages C/D — do not remove
+    [[ -x "$PLINK1_BIN" ]] || { echo "ERROR: plink not found via ${MOD_PLINK1}" >&2; exit 1; }
+    [[ -x "$PLINK2_BIN" ]] || { echo "ERROR: plink2 not found via ${MOD_PLINK2}" >&2; exit 1; }
 
     python3 "${BUNDLE}/scripts/af_concordance_build.py" \
         --qc-dir "${UNF_DIR}" \
         --annot "${ANNOT}" \
         --out "${AF_EXCLUDE}" \
         --work "${AF_WORK}" \
+        --plink1 "${PLINK1_BIN}" \
+        --plink2 "${PLINK2_BIN}" \
         --thresh "${THRESH:-0.05}" \
         --zmin "${ZMIN:-5.0}" \
         --min-cell "${MIN_CELL:-100}" \
         --hwe "${HWE:-1e-4}" \
         --min-hwe-controls "${MIN_HWE_CONTROLS:-50}" \
         ${HWE_BOTH_TAILS:+--hwe-both-tails} \
+        $([[ "${HWE_REQUIRE_EXCESS:-1}" == "0" ]] && echo --no-hwe-require-excess) \
         --mishap "${MISHAP:-0}" \
         --min-mishap "${MIN_MISHAP:-100}" \
         --discordance "${DISC}" \

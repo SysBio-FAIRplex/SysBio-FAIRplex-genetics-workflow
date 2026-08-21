@@ -37,11 +37,23 @@ can. Two cells carry most of the weight:
 The flags are unioned across cells. Note this is not selection on the outcome: cells are internally
 disease-constant, and the list is applied to a case-vs-case contrast.
 
-NOISE CALIBRATION. A fixed |dAF| threshold is sample-size dependent — a 120-sample cell throws far
-more noise flags than a 3,000-sample one, which would over-filter small cells AND make the pairwise
-rates incomparable for the liftover question below. A variant is flagged only if it clears BOTH
-|dAF| > --thresh AND z > --zmin, where z uses each arm's actual per-variant OBS_CT (so differential
-missingness is handled too).
+THE TEST IS PLINK'S. Each pair is compared with `plink --assoc` on callset membership as the
+phenotype — the standard 1-df allelic chi-square on the 2x2 allele-count table. It was a Python
+two-sample test of proportions with pooled variance until 2026-08-20; that is the same statistic by
+algebra (z^2 = chi^2), and the swap was verified to change nothing: on the largest cell (EUR/AD,
+7,538,809 variants) both flagged 1,698 with a symmetric difference of 0 in both directions. The
+reason to prefer plink's is communication — a named, recognisable test needs no defending, while a
+hand-rolled one has to be taken on trust. See assoc_pair().
+
+NOISE CALIBRATION. A significance threshold alone is sample-size dependent — a 120-sample cell
+throws far more noise flags than a 3,000-sample one, which would over-filter small cells AND make
+the pairwise rates incomparable for the liftover question below. A variant is flagged only if it
+clears BOTH |dAF| > --thresh AND z > --zmin, the latter read off .assoc's P column as
+P < erfc(zmin/sqrt2) — the same rule, but P is the only column printed precisely enough to decide
+it at the boundary (see assoc_pair). The floor is absolute rather than relative,
+deliberately: at MAF ~20% significance already requires |dAF| ~ 0.14 so the floor never binds, while
+at MAF ~2% it is reachable at ~0.035 — a large relative discordance that is nonetheless KEPT,
+because a filter licensed to delete should err toward keeping.
 
 SCOPE. Applied to the ASSOCIATION set, not just the PCA input. A variant mismapped badly enough to
 bend PC1 produces a spurious association in the test itself, where no PC adjustment reaches it.
@@ -86,6 +98,9 @@ from collections import defaultdict
 from pathlib import Path
 import argparse
 import csv
+import math
+import os
+import shutil
 import subprocess
 import sys
 
@@ -144,23 +159,126 @@ def read_annot(path):
     return out
 
 
-def read_afreq(path):
-    """-> {id: (alt_freq, obs_ct)}. OBS_CT is the ALLELE count, so it already absorbs missingness."""
-    out = {}
-    with open(path) as fh:
-        hdr = fh.readline().lstrip("#").rstrip("\n").split("\t")
-        i_id, i_f, i_n = hdr.index("ID"), hdr.index("ALT_FREQS"), hdr.index("OBS_CT")
+def assoc_pair(qc, work, fid, anc, dx, x, ids_x, y, ids_y, a):
+    """One callset-pair comparison inside a (stratum x dx) cell -> (tested, flagged).
+
+    THE TEST IS PLINK'S, NOT OURS. `plink --assoc` with callset membership as the phenotype is
+    the standard 1-df allelic chi-square on the 2x2 allele-count table. This used to be computed
+    here in Python — a two-sample test of proportions with pooled variance, `z = |f1-f2| /
+    sqrt(p(1-p)(1/n1+1/n2))` — which is the same statistic by algebra (z^2 = chi^2), but a
+    reviewer has to take a hand-rolled implementation on trust and can simply recognise this one.
+
+    VERIFIED IDENTICAL before the swap, 2026-08-20, on the largest cell (EUR/AD, divco_hs=121 vs
+    wgs_harm=657, 7,538,809 variants): the Python rule flagged 1,698, `--assoc` at CHISQ > 25 with
+    the same |dAF| floor flagged 1,698, and the symmetric difference was **0 in both directions**.
+    So this swap changed no result — it removed a statistic from the codebase.
+
+    Both criteria are kept, and the second is not optional: CHISQ alone scales with n, so at
+    EUR's thousands a negligible difference clears any threshold while at CAH's hundreds a large
+    one may not, and the filter would then mean something different in every stratum (the same
+    argument 07_gwas.sh:49 makes for its differential-missingness filter). Concretely, at MAF ~20%
+    in this cell z > 5 already requires |dAF| ~ 0.14 so the floor never binds, while at MAF ~2% it
+    is reachable at ~0.035 and the floor is what stops the list filling with low-frequency noise.
+    The floor is ABSOLUTE, deliberately: a 0.035 gap at MAF 2% is a large *relative* discordance
+    and is kept anyway, because a filter licensed to delete should err toward keeping.
+
+    --assoc is plink1.9 only (plink2 dropped it for --glm, which is logistic regression on dosage:
+    asymptotically equivalent, not identical, so it would have moved the flags and cost us the
+    verification above). Both shell wrappers therefore load MOD_PLINK1 unconditionally.
+    """
+    # Per-arm keeps, written under the same names the --freq stage used, so the intermediates
+    # stay addressable by hand and sentinel_detail() can reuse them.
+    for cs, ids in ((x, ids_x), (y, ids_y)):
+        (work / f"{anc}_{dx}_{cs}.keep").write_text(
+            "".join(f"{fid[i]}\t{i}\n" for i in ids))
+    ph = work / f"{anc}_{dx}_{x}__vs__{y}.pheno"
+    # plink1.9 case/control coding: 2 = case, 1 = control. Which arm is which is arbitrary —
+    # |F_A - F_U| and CHISQ are both symmetric.
+    ph.write_text("".join(f"{fid[i]}\t{i}\t2\n" for i in ids_x)
+                  + "".join(f"{fid[i]}\t{i}\t1\n" for i in ids_y))
+    stem = work / f"{anc}_{dx}_{x}__vs__{y}"
+    run([a.plink1, "--bfile", str(qc), "--keep", str(ph), "--pheno", str(ph),
+         "--assoc", "--allow-no-sex", "--out", str(stem)])
+
+    # THRESHOLD ON P, NOT ON CHISQ, and the reason is printed precision rather than statistics.
+    # `z > zmin`  <=>  1-df chi-square > zmin^2  <=>  two-sided normal P < erfc(zmin/sqrt2), so all
+    # three are the same rule. But .assoc prints CHISQ to four SIGNIFICANT figures, so a true
+    # 25.005 lands on disk as "25" and `25.0 > 25` is false. That cost exactly one variant on the
+    # first verification run — chr6:32555808:T:C, in the MHC, EUR controls, |dAF| = 0.107 with
+    # z = 5.0005 — which the Python implementation had flagged and this one silently dropped.
+    # P is printed to four significant figures too, but it is exponential, so near the boundary it
+    # carries ~1000x the resolution: 5.719e-07 pins chi-square to ~0.001 where "25" pins it only
+    # to 0.005. Reading the decision off the coarser column was the whole discrepancy.
+    p_max = math.erfc(a.zmin / 2 ** 0.5)
+    tested, bad = set(), set()
+    with open(f"{stem}.assoc") as fh:
+        hdr = fh.readline().split()
+        i_snp, i_fa, i_fu, i_p = (hdr.index("SNP"), hdr.index("F_A"),
+                                  hdr.index("F_U"), hdr.index("P"))
         for line in fh:
-            t = line.rstrip("\n").split("\t")
+            t = line.split()
+            if len(t) <= i_p:
+                continue
+            snp = t[i_snp]
+            tested.add(snp)
             try:
-                out[t[i_id]] = (float(t[i_f]), int(t[i_n]))
+                pval = float(t[i_p])
+                # A1 is plink's minor allele, not necessarily ALT — but |F_A - F_U| is invariant
+                # to which allele is counted, so the effect-size floor transfers unchanged.
+                daf = abs(float(t[i_fa]) - float(t[i_fu]))
             except ValueError:
-                pass          # plink writes NA where an arm has no called genotypes
-    return out
+                continue                          # plink writes NA where an arm is monomorphic
+            if pval < p_max and daf > a.thresh:
+                bad.add(snp)
+    return tested, bad
 
 
-# parse_id lived here, duplicated in 08_ctrl_ctrl_filter.py. It is gene_annot.parse_variant_id now,
-# called via sentinel_hits — the same consolidation as the coordinates above.
+def sentinel_detail(hits, arm_index, work, plink2):
+    """Per-arm ALT frequency and CALL RATE for every sentinel hit, printed under the tripwire.
+
+    WHY THE CALL RATE IS HERE. On 2026-08-20 the CR1 hit was resolved twice by hand-running awk
+    over the .afreq intermediates, and the first attempt read the columns positionally and
+    mislabelled them — hiding the number that turned out to BE the answer: divco_hs called that
+    variant in 156 of 242 alleles (64.5%) while every other arm was complete. Inflated ALT
+    frequency plus non-random dropout is lost reference calls, which is a mechanism; the frequency
+    gap alone was only its shadow. A tripwire that says "look here" should hand over what you need
+    to look with.
+
+    Cost is one tiny --freq per arm, restricted to the handful of flagged sentinel variants.
+    """
+    ids = sorted({v for _, near in hits for v in near})
+    if not ids or not arm_index:
+        return
+    snps = work / "sentinel_hits.snplist"
+    snps.write_text("".join(f"{v}\n" for v in ids))
+
+    per_variant = defaultdict(list)
+    for (anc, dx, cs), (qc, keep) in sorted(arm_index.items()):
+        stem = work / f"sentinel_{anc}_{dx}_{cs}"
+        run([plink2, "--bfile", str(qc), "--keep", str(keep),
+             "--extract", str(snps), "--freq", "--out", str(stem)])
+        if not Path(f"{stem}.afreq").exists():
+            continue
+        with open(f"{stem}.afreq") as fh:
+            hdr = fh.readline().lstrip("#").rstrip("\n").split("\t")
+            i_id, i_f, i_n = hdr.index("ID"), hdr.index("ALT_FREQS"), hdr.index("OBS_CT")
+            for line in fh:
+                t = line.rstrip("\n").split("\t")
+                per_variant[t[i_id]].append((f"{anc}/{dx}/{cs}", t[i_f], t[i_n], len(keep_n(keep))))
+
+    print("\n  per-arm detail for the hits above "
+          "(call rate << 100% in ONE arm is dropout, not a frequency difference):")
+    for v in ids:
+        print(f"    {v}")
+        for label, f, n, n_samp in per_variant.get(v, []):
+            rate = 100 * int(n) / (2 * n_samp) if n_samp else 0.0
+            print(f"        {label:28} ALT_FREQ={f:<10} OBS_CT={n:>6}  call rate={rate:5.1f}%")
+
+
+def keep_n(path):
+    """Lines of a keep file, for turning OBS_CT (alleles) into a call rate."""
+    with open(path) as fh:
+        return [ln for ln in fh if ln.strip()]
 
 
 def main():
@@ -176,6 +294,18 @@ def main():
                          "also works — same column names — and the two must agree")
     ap.add_argument("--out", required=True, help="exclusion list to write")
     ap.add_argument("--work", required=True)
+    # BOTH BINARIES, BY ABSOLUTE PATH, because they cannot both be on PATH. On biowulf `plink` and
+    # `plink2` are one module family: `module load plink/1.9.0-beta4.4` UNLOADS plink/6-alpha
+    # ("plink/6-alpha => plink/1.9.0-beta4.4") and leaves a non-executable plink2 earlier on PATH,
+    # so a bare "plink2" then dies with PermissionError. This bit the first --assoc run
+    # (2026-08-20): the frequency stage passed and the next plink2 call failed. It was latent
+    # before that too — the old `MISHAP != 0` conditional load would have broken plink2 for every
+    # stratum after the first, and only escaped notice because MISHAP defaults to 0.
+    ap.add_argument("--plink1", default="plink",
+                    help="plink1.9 binary — used for --assoc and --test-mishap. Pass an absolute "
+                         "path; the shell wrappers resolve it while that module is loaded")
+    ap.add_argument("--plink2", default="plink2",
+                    help="plink2 binary — used for --freq, --hwe. Absolute path, as above")
     ap.add_argument("--thresh", type=float, default=0.05,
                     help="effect-size floor. 0.05 is where the diagnostic's arms flattened: "
                          "0.10->eta2 .055, 0.05->.025, 0.02->.021 for 4,684 more variants")
@@ -191,6 +321,16 @@ def main():
                          "--all_variant default. Set 0 to disable the stage entirely")
     ap.add_argument("--min-hwe-controls", type=int, default=50,
                     help="controls per callset per stratum needed to test HWE there")
+    ap.add_argument("--hwe-require-excess", dest="hwe_require_excess",
+                    action="store_true", default=True,
+                    help="(default) a stratum x callset cell contributes HWE exclusions only if "
+                         "its rejection count exceeds the number expected by chance at --hwe. "
+                         "E/O is the BH false-discovery estimate for that cell's rejections, so a "
+                         "cell at or below 1.0x has no attributable signal to contribute")
+    ap.add_argument("--no-hwe-require-excess", dest="hwe_require_excess",
+                    action="store_false",
+                    help="union every cell's HWE rejections in regardless of excess — the "
+                         "pre-2026-08-20 behaviour, kept so the 4,415-variant list is reproducible")
     ap.add_argument("--hwe-both-tails", action="store_true",
                     help="drop keep-fewhet, i.e. also exclude het-DEFICIENT variants as plink1.9 "
                          "does. Off by default: mismapping causes het excess, while deficiency is "
@@ -210,12 +350,24 @@ def main():
     ap.add_argument("--dx", nargs="+", default=None, help="default: every dx meeting --min-cell")
     a = ap.parse_args()
 
+    # Fail here, not 40 minutes in. The first --assoc run died at the FIRST plink2 call after the
+    # frequency stage had already succeeded, because loading the plink1.9 module had swapped
+    # plink/6-alpha off PATH — a PermissionError from deep inside subprocess, three stages late.
+    for label, exe in (("--plink1", a.plink1), ("--plink2", a.plink2)):
+        if not (os.path.isabs(exe) or shutil.which(exe)):
+            sys.exit(f"{label}={exe} is not executable and not on PATH. plink and plink2 are ONE "
+                     f"module family here, so PATH can hold only one — pass absolute paths "
+                     f"(the shell wrappers resolve them while each module is loaded).")
+        if os.path.isabs(exe) and not os.access(exe, os.X_OK):
+            sys.exit(f"{label}={exe} is not executable.")
+
     qcd, work = Path(a.qc_dir), Path(a.work)
     work.mkdir(parents=True, exist_ok=True)
     annot = read_annot(a.annot)
     print(f"annot: {len(annot):,} samples from {a.annot}")
-    print(f"flag rule: |dAF| > {a.thresh} AND z > {a.zmin}, within (stratum x dx) cells "
-          f"of >= {a.min_cell} per callset\n")
+    print(f"flag rule: plink --assoc P < {math.erfc(a.zmin / 2 ** 0.5):.4g} "
+          f"(z > {a.zmin:g}, i.e. chi-square > {a.zmin**2:g}) AND |dAF| > {a.thresh}, "
+          f"within (stratum x dx) cells of >= {a.min_cell} per callset\n")
 
     ancs = a.ancs or sorted(p.name[len("cohort_"):-len("_qc.bed")]
                             for p in qcd.glob("cohort_*_qc.bed"))
@@ -227,9 +379,11 @@ def main():
     cells = []                                  # (anc, dx, csA, csB, nA, nB, n_shared, n_flag)
     by_pair = defaultdict(lambda: [0, 0, 0])    # pair -> [comparisons, shared, flagged]
     hwe_failed = set()
-    hwe_rows = []                               # (anc, callset, n_controls, n_tested, n_fail)
+    hwe_withheld = set()                        # failures from cells with no excess over chance
+    hwe_rows = []      # (anc, callset, n_controls, n_tested, n_fail, exp, ratio, voted)
     mishap_failed = set()
     mishap_rows = []                            # (anc, callset, n, n_ref, n_total_with_flanking)
+    arm_index = {}      # (anc, dx, callset) -> (qc stem, keep file). Only for sentinel_detail().
 
     for anc in ancs:
         qc = qcd / f"cohort_{anc}_qc"
@@ -266,7 +420,6 @@ def main():
                   f"excluded from every cell")
 
         dxs = a.dx or sorted({d for d, _ in cell})
-        freq_cache = {}
         for dx in dxs:
             arms = {cs: ids for (d, cs), ids in cell.items()
                     if d == dx and len(ids) >= a.min_cell}
@@ -277,34 +430,15 @@ def main():
                 continue
             print(f"{anc}/{dx:8}: {desc}")
 
-            for cs, ids in sorted(arms.items()):
-                key = (anc, dx, cs)
-                if key not in freq_cache:
-                    kf = work / f"{anc}_{dx}_{cs}.keep"
-                    kf.write_text("".join(f"{fid[i]}\t{i}\n" for i in ids))
-                    stem = work / f"{anc}_{dx}_{cs}"
-                    run(["plink2", "--bfile", str(qc), "--keep", str(kf),
-                         "--freq", "--out", str(stem)])
-                    freq_cache[key] = read_afreq(f"{stem}.afreq")
-
             names = sorted(arms)
+            for cs in names:
+                arm_index[(anc, dx, cs)] = (qc, work / f"{anc}_{dx}_{cs}.keep")
             for i in range(len(names)):
                 for j in range(i + 1, len(names)):
                     x, y = names[i], names[j]
-                    fx, fy = freq_cache[(anc, dx, x)], freq_cache[(anc, dx, y)]
-                    shared = fx.keys() & fy.keys()
+                    shared, bad = assoc_pair(qc, work, fid, anc, dx,
+                                             x, arms[x], y, arms[y], a)
                     evaluated |= shared
-                    bad = set()
-                    for v in shared:
-                        f1, n1 = fx[v]
-                        f2, n2 = fy[v]
-                        d = f1 - f2
-                        if abs(d) <= a.thresh or n1 < 2 or n2 < 2:
-                            continue
-                        p = (f1 * n1 + f2 * n2) / (n1 + n2)      # pooled, allele-count weighted
-                        var = p * (1 - p) * (1.0 / n1 + 1.0 / n2)
-                        if var > 0 and abs(d) / var ** 0.5 > a.zmin:
-                            bad.add(v)
                     flagged |= bad
                     pair = "|".join(sorted((x, y)))
                     by_pair[pair][0] += 1
@@ -323,7 +457,7 @@ def main():
                 kf = work / f"hwe_{anc}_{csn}.keep"
                 kf.write_text("".join(f"{fid[i]}\t{i}\n" for i in ids))
                 stem = work / f"hwe_{anc}_{csn}"
-                cmd = ["plink2", "--bfile", str(qc), "--keep", str(kf),
+                cmd = [a.plink2, "--bfile", str(qc), "--keep", str(kf),
                        "--hwe", repr(a.hwe)]
                 if not a.hwe_both_tails:
                     cmd.append("keep-fewhet")
@@ -334,10 +468,38 @@ def main():
                     for line in fh:
                         passing.add(line.strip())
                 fail = anc_vars - passing
-                hwe_failed |= fail
-                hwe_rows.append((anc, csn, len(ids), len(anc_vars), len(fail)))
+                # A fixed threshold rejects a PREDICTABLE number of variants when nothing is wrong:
+                # N*alpha, halved because keep-fewhet takes one tail. At N~8M and alpha=1e-4 that is
+                # ~400. So a cell's rejection count is (false positives + true positives) with the
+                # first term known in advance, and E/O is exactly the Benjamini-Hochberg FDR
+                # estimate for its rejection set.
+                #
+                # This cell therefore only votes if it clears its OWN expectation. There is no
+                # multiplier to justify: the bar is "more rejections than chance explains".
+                # Measured 2026-08-20 (job 27857727): EUR/wgs_harm 1,680 vs 377 = 4.5x — real, and
+                # from the SMALLEST control sample of the three, so it is not a power artifact;
+                # EUR/wb_dwgs 132 vs 377 = 0.35x; AJ/wb_dwgs 97 vs 400 = 0.24x. Under the old
+                # unconditional union those two contributed ~229 variants indistinguishable from
+                # null rejections — one of them inside LRRK2, deleted from EVERY stratum on the
+                # strength of a cell showing no excess at all. Below-chance is not suspicious, it is
+                # underpowered: the exact test is discrete and conservative at n in the hundreds.
+                #
+                # Why routine pruning never needs this: step 6 stage A already ran --hwe 1e-6 per
+                # stratum, where the null contributes ~4 in 7.5M. This scan is at 1e-4 (100x the
+                # null burden), PER CALLSET, and its result applies ACROSS strata — it gives up both
+                # properties that let a conventional prune ignore the null, in exchange for callset
+                # attribution. HWE_REQUIRE_EXCESS=0 restores the old unconditional union.
+                exp = len(anc_vars) * a.hwe * (1.0 if a.hwe_both_tails else 0.5)
+                ratio = len(fail) / exp if exp else 0.0
+                voted = (not a.hwe_require_excess) or len(fail) > exp
+                if voted:
+                    hwe_failed |= fail
+                else:
+                    hwe_withheld |= fail
+                hwe_rows.append((anc, csn, len(ids), len(anc_vars), len(fail), exp, ratio, voted))
                 print(f"    HWE {csn} controls (n={len(ids):,}): {len(fail):,} fail "
-                      f"({100*len(fail)/len(anc_vars) if anc_vars else 0:.3f}%)")
+                      f"({100*len(fail)/len(anc_vars) if anc_vars else 0:.3f}%), {ratio:.2f}x chance"
+                      + ("" if voted else "  -> NOT unioned in (no excess over chance)"))
 
         # ── stage 3: per-callset haplotype missingness (GenoTools' `haplotype`, plink1.9) ──
         # Runs on ALL samples of the callset, not just controls: --test-mishap keys on missingness
@@ -352,7 +514,7 @@ def main():
                 kf = work / f"mishap_{anc}_{csn}.keep"
                 kf.write_text("".join(f"{fid[i]}\t{i}\n" for i in ids))
                 stem = work / f"mishap_{anc}_{csn}"
-                run(["plink", "--bfile", str(qc), "--keep", str(kf), "--maf", "0.05",
+                run([a.plink1, "--bfile", str(qc), "--keep", str(kf), "--maf", "0.05",
                      "--test-mishap", "--allow-no-sex", "--out", str(stem)])
                 # .missing.hap: SNP HAPLOTYPE F_0 F_1 M_H1 M_H2 CHISQ P FLANKING
                 # GenoTools excludes the reference SNP AND everything in FLANKING.
@@ -430,14 +592,21 @@ def main():
         print(f"PER-CALLSET HWE among controls (p < {a.hwe:g}"
               f"{'' if a.hwe_both_tails else ', keep-fewhet'})")
         print(f"{'anc':5} {'callset':10} {'controls':>9} {'tested':>12} {'fail':>8} {'%':>7} "
-              f"{'exp by chance':>14}")
-        for anc, csn, nc, nt, nf in hwe_rows:
-            # keep-fewhet tests one tail, so roughly half the nominal rate turns into exclusions
-            exp = nt * a.hwe * (1.0 if a.hwe_both_tails else 0.5)
+              f"{'exp by chance':>14} {'ratio':>7}  {'used?':6}")
+        # exp/ratio are carried from the decision point rather than recomputed here: the number
+        # that gates and the number that prints must be the same one.
+        for anc, csn, nc, nt, nf, exp, ratio, voted in hwe_rows:
             print(f"{anc:5} {csn:10} {nc:9,} {nt:12,} {nf:8,} "
-                  f"{100*nf/nt if nt else 0:7.3f} {exp:14,.0f}")
-        print("  'exp by chance' is the false-positive count at this threshold. Excess over it is")
-        print("  the real signal. A callset far above its expectation is the broken one.")
+                  f"{100*nf/nt if nt else 0:7.3f} {exp:14,.0f} {ratio:7.2f}  "
+                  f"{'yes' if voted else 'WITHHELD':6}")
+        print("  'exp by chance' is the false-positive count at this threshold; E/O is the BH")
+        print("  false-discovery estimate for a cell's rejections. A callset far above its own")
+        print("  expectation is the broken one — and one at or below 1.0x has nothing to")
+        print("  attribute, so it contributes nothing (--no-hwe-require-excess to override).")
+        if hwe_withheld:
+            n_w = len(hwe_withheld - flagged)
+            print(f"  WITHHELD from cells with no excess: {len(hwe_withheld):,} rejections, "
+                  f"{n_w:,} of which are in no other channel and so are NOT excluded.")
         print(f"\n  HWE failures also flagged by the frequency test : {overlap:,}")
         print(f"  HWE failures the frequency test missed         : {n_hwe_new:,}")
         print("  Overlap is a mechanism-based confirmation of an effect-based test: HWE knows")
@@ -453,7 +622,8 @@ def main():
         print(f"  new                               : {n_mishap_new:,}")
 
     print("\n" + "=" * 78)
-    print(f"flagged by AF concordance (|dAF| > {a.thresh}, z > {a.zmin}) : {n_af:,}")
+    print(f"flagged by AF concordance (--assoc P < {math.erfc(a.zmin / 2 ** 0.5):.3g}, "
+          f"|dAF| > {a.thresh}) : {n_af:,}")
     print(f"added by per-callset control HWE (p < {a.hwe:g})              : {n_hwe_new:,}")
     if mishap_rows:
         print(f"added by haplotype missingness (p <= {a.mishap:g})            : {n_mishap_new:,}")
@@ -500,9 +670,40 @@ def main():
                 print(f"      ... and {len(near)-10} more")
         print(f"\n  {n} flagged variant(s) in {len(hits)} sentinel locus/loci. Nothing is")
         print("  auto-whitelisted. NOTE: stage C of step 6 applies this list LATER IN THE SAME")
-        print("  JOB, so this is a report, not a checkpoint — resolve each hit against the")
-        print("  per-cell .afreq / .snplist intermediates in --work before step 7 reads the")
-        print("  association set. Record the verdict in PROJECT_LOG.md so it is not re-derived.")
+        print("  JOB, so this is a report, not a checkpoint — resolve each hit before step 7 reads")
+        print("  the association set, and record the verdict in PROJECT_LOG.md so that the next")
+        print("  run does not re-derive it. The per-arm table below is what to read it from.")
+        sentinel_detail(hits, arm_index, work, a.plink2)
+
+    # ── provenance, beside the list ──
+    # The list itself must stay a bare ID list for `plink2 --exclude`, so it cannot carry a
+    # header — which is why "what settings produced this 4,415-variant file?" was unanswerable
+    # from disk, the same failure class as the 2026-08-17 stale-list incident.
+    prov = Path(f"{a.out}.provenance.txt")
+    prov.write_text(
+        f"exclusion list : {a.out}\n"
+        f"variants       : {len(flagged):,}\n"
+        f"built          : job {os.environ.get('SLURM_JOB_ID', 'interactive')} on "
+        f"{os.environ.get('SLURMD_NODENAME', 'unknown host')}\n"
+        f"qc-dir         : {a.qc_dir}\n"
+        f"annot          : {a.annot}\n"
+        f"\nfrequency channel : plink --assoc (1-df allelic chi-square), "
+        f"P < {math.erfc(a.zmin / 2 ** 0.5):.4g} (z > {a.zmin:g}) AND |dAF| > {a.thresh}\n"
+        f"  min-cell        : {a.min_cell} per callset per (stratum x dx) cell\n"
+        f"  flagged         : {n_af:,}\n"
+        f"HWE channel       : p < {a.hwe:g}"
+        f"{'' if a.hwe_both_tails else ', keep-fewhet'}, controls only, "
+        f"min {a.min_hwe_controls} controls\n"
+        f"  require-excess  : {a.hwe_require_excess}"
+        f"{'' if a.hwe_require_excess else '  (PRE-2026-08-20 BEHAVIOUR)'}\n"
+        f"  added           : {n_hwe_new:,}   withheld: {len(hwe_withheld):,}\n"
+        f"discordance       : rate >= {a.disc_rate} -> {n_disc:,} rows\n"
+        f"mishap            : {'off' if a.mishap <= 0 else f'p <= {a.mishap:g}'}\n"
+        "\nper-cell HWE (anc callset controls tested fail exp ratio used)\n"
+        + "".join(f"  {r[0]:5} {r[1]:10} {r[2]:7,} {r[3]:12,} {r[4]:8,} "
+                  f"{r[5]:8,.0f} {r[6]:6.2f}  {'yes' if r[7] else 'WITHHELD'}\n"
+                  for r in hwe_rows))
+    print(f"\nprovenance -> {prov}")
 
 
 if __name__ == "__main__":

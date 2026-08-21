@@ -39,6 +39,7 @@
 #
 # Knobs: THRESH (0.05) · ZMIN (5.0) · MIN_CELL (100) · DISC_RATE (0.50) · ANCS · DXS
 #        HWE (1e-4, 0 disables) · MIN_HWE_CONTROLS (50) · HWE_BOTH_TAILS (unset)
+#        HWE_REQUIRE_EXCESS (1; set 0 for the pre-2026-08-20 union that gives 4,415)
 #        MISHAP (0 = off; set 1e-4 to enable) · MIN_MISHAP (100)
 #
 # GUARDRAIL: sbatch script, run by the USER (it reads the id-bearing annotation and genotypes).
@@ -67,9 +68,23 @@ MIN_HWE_CONTROLS=${MIN_HWE_CONTROLS:-50}
 # here. Run MISHAP=1e-4 once for completeness / demo equivalence, not on the critical path.
 MISHAP=${MISHAP:-0}
 MIN_MISHAP=${MIN_MISHAP:-100}
+# A (stratum x callset) HWE cell contributes exclusions only if its rejection count exceeds the
+# number expected by chance at $HWE. Set 0 for the pre-2026-08-20 unconditional union, which is
+# what reproduces the 4,415-variant list.
+HWE_REQUIRE_EXCESS=${HWE_REQUIRE_EXCESS:-1}
 
-module load "${MOD_PLINK2}"
-[[ "${MISHAP}" != "0" ]] && module load "${MOD_PLINK1}"   # --test-mishap is plink1.9 only
+# BOTH plink GENERATIONS, RESOLVED TO ABSOLUTE PATHS. plink and plink2 are one module family on
+# this cluster, so loading MOD_PLINK1 UNLOADS MOD_PLINK2 ("plink/6-alpha => plink/1.9.0-beta4.4")
+# and leaves a non-executable plink2 earlier on PATH — a bare "plink2" then dies with
+# PermissionError, which is how the first --assoc run failed (2026-08-20), three stages in.
+# PATH can hold only one; absolute paths hold both. Verified that plink2 runs correctly by
+# absolute path with the plink1 module active, so neither binary needs its own module environment.
+# (If that ever changes, `module load X && exec plink...` shims in $WORK/bin are the fallback —
+# `module` does work in a non-interactive subshell here, also verified.)
+module load "${MOD_PLINK2}"; PLINK2_BIN=$(command -v plink2)
+module load "${MOD_PLINK1}"; PLINK1_BIN=$(command -v plink)
+[[ -x "$PLINK2_BIN" ]] || { echo "ERROR: plink2 not found via ${MOD_PLINK2}" >&2; exit 1; }
+[[ -x "$PLINK1_BIN" ]] || { echo "ERROR: plink not found via ${MOD_PLINK1}" >&2; exit 1; }
 module load "${MOD_PYTHON}"
 source "${VENV}/bin/activate"
 
@@ -89,12 +104,15 @@ python3 "${BUNDLE}/scripts/af_concordance_build.py" \
     --annot "${ANNOT}" \
     --out "${OUT}" \
     --work "${WORK}" \
+    --plink1 "${PLINK1_BIN}" \
+    --plink2 "${PLINK2_BIN}" \
     --thresh "${THRESH}" \
     --zmin "${ZMIN}" \
     --min-cell "${MIN_CELL}" \
     --hwe "${HWE}" \
     --min-hwe-controls "${MIN_HWE_CONTROLS}" \
     ${HWE_BOTH_TAILS:+--hwe-both-tails} \
+    $([[ "${HWE_REQUIRE_EXCESS}" == "0" ]] && echo --no-hwe-require-excess) \
     --mishap "${MISHAP}" \
     --min-mishap "${MIN_MISHAP}" \
     --discordance "${DISC}" \

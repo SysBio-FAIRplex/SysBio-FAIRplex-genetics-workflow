@@ -145,6 +145,79 @@ one way a list this job did not build can still reach stage C.
 `sample_annot.csv` and got 4,415 variants — the same count job 27697096 got through the grain — and
 §12a reports 12,495 shared IIDs with 0 callset and 0 dx mismatches.
 
+---
+
+## NEXT ACTION — delete the sentinel-loci tripwire from the pipeline
+
+**Decision taken 2026-08-20. Remove it outright; do NOT make it configurable.** Rationale is in
+`PROJECT_LOG.md` under that date. Short version: on its first run against the corrected gene
+coordinates it produced **279 hits across 8 loci and ~1,700 lines of per-arm tables** — that is a
+census, not a tripwire. It is a report, not a gate, and it fires *after* stage C has already applied
+the list in the same job, so it has no mechanical effect at all. And the 9-gene list is arbitrary
+with no citation behind it: it scrutinises a hand-picked handful while the other ~4,100 flagged
+variants get none. Either every deletion needs justification or none does.
+
+**What to remove from `scripts/af_concordance_build.py`:**
+
+| | |
+|---|---|
+| `from gene_annot import load_genes, sentinel_hits, SENTINEL_FLANK` | the import |
+| `sentinel_detail()` and `keep_n()` | ~40 lines |
+| the `---- sentinel loci ----` block at the end of `main()` | including the refFlat failure banner |
+| `arm_index` | the dict and the loop that populates it — it exists ONLY for `sentinel_detail` |
+| the per-arm keep-file writes in `assoc_pair()` | keep ONLY if wanted as hand-inspectable intermediates; `--assoc` itself needs just the pheno file |
+
+**Keep `scripts/gene_annot.py`.** It stays valuable as the CLI for "what gene is this variant in"
+(`python3 scripts/gene_annot.py --at chr12:39977709`), which is what resolved the mislabelling
+described below. Its `SENTINEL_GENES` / `SENTINEL_FLANK` / `sentinel_hits()` become dead code once
+both callers are gone — delete those three, keep `load_genes` / `gene_region` / `Annotator`.
+
+**Open sub-question, decide before editing:** `scripts/08_ctrl_ctrl_filter.py` also calls
+`sentinel_hits` (wired 2026-08-20). Its purpose is the *opposite* — a known locus appearing in the
+control-vs-control scan is the screening asymmetry showing up, i.e. an argument for **not**
+subtracting — and step 8 never deletes anything. Same critiques apply (arbitrary list, 500 kb
+flanks, the MHC will dominate), but the decision is not the same one. Either remove both and rely on
+`.ccannot.tsv` being read directly, or keep 08's and delete only 6a's.
+
+**Why the ±500 kb windows made it worse, recorded so it is not repeated.** The flank was sized in
+`gene_annot.py` for step 8's question ("did my association signal land in a known locus?", where LD
+blocks matter — it measured MAPT±500kb catching 2,286 of 2,318 hits). For 6a's question ("am I
+deleting a variant that is part of a known locus?") it labels flank hits with the gene's name, and
+**none of the 21 "LRRK2±500kb" variants were in LRRK2** — they were in `SLC2A13` and `C12orf40`,
+240–435 kb away. Same for SNCA (intergenic), GBA1 (`DAP3`), APOE (`ZNF285`/`ZNF229`). Verified with
+`python3 scripts/gene_annot.py --at <pos>`.
+
+### Then: the one aggregate question worth keeping
+
+Dropping the tripwire does **not** dispose of "is this filter disproportionately hitting known
+loci?" — that is a legitimate question, and the 279-hit dump did surface something: **245 of the 279
+were MHC** (`HLA-DRB1±500kb` 213, `HLA-B±500kb` 32), roughly chr6:30.8–33.1 Mb. Ask it as a rate,
+with the correct denominator:
+
+```bash
+cd /data/CARDPB2/sysbio/wgs && source config.sh
+B=${MERGED_DIR}/by_ancestry_qc/unfiltered/cohort_EUR_qc.bim
+L=${MERGED_DIR}/exclude_test_assoc.txt
+tested_mhc=$(awk '{split($2,p,":"); if ((p[1]=="chr6"||p[1]=="6") && p[2]>=30800000 && p[2]<=33100000) n++} END {print n+0}' "$B")
+tested_all=$(wc -l < "$B")
+flag_mhc=$(awk -F: '($1=="chr6"||$1=="6") && $2>=30800000 && $2<=33100000 {n++} END {print n+0}' "$L")
+flag_all=$(wc -l < "$L")
+python3 -c "
+tm,ta,fm,fa=$tested_mhc,$tested_all,$flag_mhc,$flag_all
+print(f'MHC    : {fm:,}/{tm:,} = {100*fm/tm:.4f}%')
+print(f'genome : {fa:,}/{ta:,} = {100*fa/ta:.4f}%')
+print(f'enrichment: {(fm/tm)/(fa/ta):.1f}x')"
+```
+
+**Why this matters and is not academic:** `06_ancestry_qc.sh`'s own header argues the MHC is a real
+AD locus and that masking it from *association* would delete signals we most expect to see — which
+is why the high-LD BED is applied to the PCA input only. This filter reaches the association set.
+`HLA-DRB1/DRB5` is one of this study's two real findings. If the enrichment is large, decide
+deliberately whether the MHC should be annotated rather than subtracted there (the step 8 pattern),
+rather than letting the default stand.
+
+---
+
 **The BR-DSNWGS grain item is CLOSED.** The 95 retained BR samples are 76 EUR / 13 AJ / 3 AMR /
 1 AAC / 1 AFR / 1 CAH. The old 19 AFR / 67 EUR rows are gone.
 
@@ -172,9 +245,11 @@ blocks anything.
 | clinical side split in two | done 2026-08-19, **RUN 2026-08-20** — §12a self-check 0 mismatches |
 | 6 ancestry QC, single pass | **done** — job 27857727. Stage B rebuilt 4,415 (matches 27697096) |
 | `analysis_grain.py` | **done 2026-08-20** — 12,495 rows × 22 cols, 17 viable, BR fixed |
-| sentinel wired to `gene_annot` | done 2026-08-20 — hardcoded tables deleted from both scripts |
-| HWE excess-over-chance gate | **open** — see known issue 7; decides the LRRK2 exclusion |
-| 7 GWAS | **next** |
+| frequency test → `plink --assoc` | done + **VERIFIED IDENTICAL** 2026-08-20, job `af_swap_test2` |
+| HWE excess-over-chance gate | written, default ON, **NOT YET RUN** — see known issue 7 |
+| **remove the sentinel entirely** | **NEXT ACTION — see below. Nothing else should run first.** |
+| MHC flag-rate measurement | open — one command, see below |
+| 7 GWAS | after those |
 
 **Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
 the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage
@@ -366,11 +441,12 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    before it was truncated, so nothing is blocked, but DivCo cannot be re-derived from source
    without re-pulling from Synapse.
 
-7. **The HWE stage has no excess-over-chance gate, and one LRRK2 variant turns on it.**
-   `af_concordance_build.py` does `hwe_failed |= fail` for every (stratum × callset) control row
-   that clears `MIN_HWE_CONTROLS`, regardless of whether that row shows any excess over its own
-   chance expectation — which the script computes and prints. It then applies the union to **every**
-   stratum. Job 27857727:
+7. **~~The HWE stage has no excess-over-chance gate~~ — FIXED 2026-08-20, not yet run.** A
+   (stratum × callset) cell now contributes exclusions only if its rejection count exceeds the
+   number expected by chance at `--hwe`. No multiplier: E/O is the Benjamini-Hochberg FDR estimate
+   for that cell's rejections, so at or below 1.0× there is nothing to attribute.
+   `HWE_REQUIRE_EXCESS=0` restores the old unconditional union, which is what reproduces the
+   4,415-variant list. The evidence that motivated it, from job 27857727:
 
    | stratum | callset | controls | fail | exp by chance | ratio |
    |---|---|---|---|---|---|
@@ -401,6 +477,23 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    Related composition point for the methods: the 1,069 HWE-only additions are general variant QC,
    not cohort-artifact removal, and they ride into the same union. The docstring's "mechanism-based
    confirmation" framing is true of the 840 overlapping variants and not of the other 1,069.
+
+   **Still open on this, deliberately not built:** moving the HWE channel to a post-hoc annotation
+   on sumstats rather than a pre-association deletion. For the association set the two are
+   identical — `--glm` tests variants independently and 5e-8 is a fixed convention, so striking a
+   variant from the sumstats is the same as never testing it — and `scripts/08_*` already
+   annotates-never-subtracts for exactly this reason. **The PCA input is the part that cannot move:
+   PCs are covariates in every test, so the frequency channel must stay pre-applied regardless.**
+
+8. **`plink1.9` is now a hard dependency of step 6 stage B.** As of 2026-08-20 the frequency test is
+   `plink --assoc` (the 1-df allelic chi-square) rather than a hand-rolled two-sample test of
+   proportions — verified identical before the swap: 1,698 vs 1,698 on EUR/AD with a symmetric
+   difference of 0 both ways. plink2 dropped `--assoc` in favour of `--glm`, which is logistic
+   regression on dosage and only asymptotically equivalent, so `MOD_PLINK1` is now loaded
+   **unconditionally** in `06_ancestry_qc.sh` and `af_concordance_build.sh` where it previously
+   loaded only for the optional mishap stage. Note `07_gwas.sh:49` records a deliberate preference
+   *not* to rely on plink1.9 being present; step 7 still doesn't, but step 6 stage B now does. If
+   that module ever goes away, the fallback is `--glm` plus a fresh equivalence check.
 
 ## Provenance
 

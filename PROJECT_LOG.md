@@ -140,6 +140,171 @@ three callsets were sex-updated from `<dataset>/metadata/`, not from the correct
 
 ---
 
+## 2026-08-20 (evening) — the --assoc swap is VERIFIED. Decision: delete the sentinel entirely.
+
+**Did.** Ran the swapped frequency test against the pre-change list. Fixed a precision bug it
+exposed. Ran the sentinel with corrected gene coordinates for the first time, read the result, and
+decided to remove the sentinel from the pipeline. **No code was changed for that removal — it is
+written up as the next action item in `HANDOFF.md` and is the first thing to do next.**
+
+**THE SWAP IS VERIFIED, on every cell.** `HWE_REQUIRE_EXCESS=0` (gate off, so the only difference
+from the committed behaviour is `plink --assoc` replacing the Python z-test) reproduced the
+exclusion list **byte-identically: 4,415 variants, `diff` empty**. Because the gate was off, this
+tests the swap across all three powered cells, not just the EUR/AD one checked by hand earlier.
+`plink --assoc` is now the frequency test, and it demonstrably changed nothing.
+
+**A precision bug, found by that verification and worth remembering.** The first attempt came back
+4,414 — one variant short, `chr6:32555808:T:C`, in the MHC. Both implementations had computed
+chi-square = **25.005**; `.assoc` prints CHISQ to four SIGNIFICANT figures, so it lands on disk as
+`"25"`, and the reader's `chisq > 25` then evaluated `25.0 > 25` → false. Fixed by thresholding on
+**P** instead (`P < erfc(zmin/sqrt2)`, the identical rule), because P is exponential and pins
+chi-square to ~0.001 near the boundary where `"25"` pins it only to 0.005.
+
+This is the same failure family as the `.afreq` column mislabel earlier the same day: `CLAUDE.md`
+rule 4 says read columns by NAME, and the lesson extends to reading them at **sufficient
+precision**. A rounded column is not a wrong column, and it is just as capable of flipping a
+decision.
+
+**Also fixed: plink and plink2 are ONE MODULE FAMILY here.** `module load plink/1.9.0-beta4.4`
+UNLOADS `plink/6-alpha` and leaves a non-executable `plink2` earlier on PATH, so a bare `plink2`
+dies with `PermissionError`. The first `--assoc` run failed that way, three stages in, after the
+frequency stage had already succeeded. Both binaries are now resolved to absolute paths while each
+module is loaded and passed as `--plink1` / `--plink2`; the Python fails fast if either is not
+executable. **`06_ancestry_qc.sh` also reloads `MOD_PLINK2` after stage B** — stages C and D call
+bare `plink2`, so leaving plink1.9 active there would have failed the exclusion apply and the PCA
+minutes after stage B reported success. Verified that plink2 runs correctly by absolute path with
+the plink1 module active, and separately that `module` does work in a non-interactive subshell (the
+`module load X && exec plink...` shim approach is a viable fallback if a future build needs its own
+environment). This bug was LATENT before the swap: the old `MISHAP != 0` conditional load had the
+same defect and escaped notice only because `MISHAP` defaults to 0.
+
+**FOUND — the sentinel tripwire does not work, and the decision is to remove it rather than tune
+it.** With the hardcoded coordinate table replaced by refFlat extents ±500 kb, it produced **279
+hits across 8 loci and ~1,700 lines of per-arm detail**. Reasons it goes:
+
+1. **279 hits is a census, not a tripwire.** Nothing is actionable at that volume, and nothing is
+   auto-whitelisted, so it has no mechanical effect either — it is a report that fires *after*
+   stage C has already applied the list in the same job.
+2. **The 9-gene list is arbitrary and uncited** (established earlier this session — `git log
+   --follow` gives one commit, no reference anywhere in the repo). It scrutinises a hand-picked
+   handful while ~4,100 other flagged variants get none. Either every deletion needs justification
+   or none does.
+3. **The ±500 kb flank actively mislabels.** It was sized for step 8's question, where LD blocks
+   matter. For 6a it names flank hits after the gene: **none of the 21 "LRRK2±500kb" variants were
+   in LRRK2** — `SLC2A13` and `C12orf40`, 240–435 kb away. SNCA's was intergenic, GBA1's in `DAP3`,
+   APOE's in `ZNF285`/`ZNF229`. That is worse than the under-reporting it replaced, because it
+   manufactures alarm and could hide a genuine in-gene hit inside a list of 21 flank hits.
+4. **Its per-variant detail was right for 2 hits and wrong for 279.** My design error.
+
+**Honest accounting of what it bought before being retired.** Two hits, one useful. CR1 turned out
+to be correctly excluded (64.5% call rate in `divco_hs` — dropout), so that hit changed nothing.
+LRRK2 led to the HWE excess-over-chance defect, which was real — but that defect was already
+visible in the ratio table printed on every run (4.5× / 0.35× / 0.24×). The sentinel supplied the
+motivation to look, not the evidence. A per-locus **rate** table was considered as a replacement and
+also rejected: it would not have prompted the LRRK2 question either, and it is one more thing to
+maintain. The aggregate question survives as a one-off measurement instead (below).
+
+**Ruled out: making it configurable** (`SENTINEL_DETAIL=1`). A knob preserves the maintenance cost
+and the misleading labels while guaranteeing nobody sets it.
+
+**FOUND — 245 of the 279 hits were MHC**, and this is the one thing worth carrying forward.
+`HLA-DRB1±500kb` 213 + `HLA-B±500kb` 32, roughly chr6:30.8–33.1 Mb. Expected in the sense that the
+MHC is the hardest region in the genome to align and call — but `06_ancestry_qc.sh`'s own header
+argues the MHC is a real AD locus and that masking it from association would delete signals we most
+expect to see (which is why the high-LD BED is PCA-input-only), and `HLA-DRB1/DRB5` is one of this
+study's two real findings. **This filter reaches the association set.** The flag-rate command with
+the correct denominator is in `HANDOFF.md`; run it before step 7 and decide deliberately whether the
+MHC should be annotated rather than subtracted there.
+
+**FOUND — the per-arm tables settle the liftover verdict per-variant, which the pairwise rate table
+never could.** Repeatedly, the two natively-called callsets agree near 0 while the lifted one does
+not: `chr6:32474706` divco_hs 0.008 / wb_dwgs 0.005 vs wgs_harm 0.207–0.213; `chr6:32588203`
+0.000 / 0.000 vs 0.088–0.107; `chr12:40509081` absent / 0.000 vs 0.131–0.199. The 2026-08-19 entry
+correctly flagged that the BY CALLSET PAIR table could not decide the liftover question because the
+both-native pair was never measured. This is per-variant, unambiguous, and points at `wgs_harm`.
+Several arms also show `OBS_CT=0` — the variant is absent from `divco_hs` entirely, not discordant.
+
+**State for the next session.** Two commits landed during this session — `16d2c9a` (step 6 as one
+pass, the clinical split, the `gene_annot` sentinel wiring, `.gitignore`/README/config) and
+`ad73810` (`CLAUDE.md`, `analysis_grain.py`, `clinical_common.py`). **Everything from the `--assoc`
+swap onward is still UNCOMMITTED**: `scripts/af_concordance_build.py` (+321 lines — `assoc_pair`,
+the HWE gate, `sentinel_detail`, the provenance sidecar, the `--plink1`/`--plink2` args),
+`scripts/af_concordance_build.sh` and `scripts/06_ancestry_qc.sh` (module handling + knob
+passthrough), plus `review/plot_af_filter_effect.py` which is still untracked. Worth committing the
+verified swap before the sentinel removal, so the two changes are separable in history.
+
+The HWE gate is written and defaults ON but has **not been run** — no run has yet produced the
+gated list, so 4,415 is still the live number.
+`${MERGED_DIR}/exclude_af_concordance.4415.bak` holds the pre-change list;
+`exclude_test_assoc.txt` is the verified swap output (also 4,415). The association set and both
+manifests are still job 27857727's — untouched, because every test ran stage B alone through
+`af_concordance_build.sh`, which is precisely the job that wrapper exists for.
+
+**Next, in order.** 1. Remove the sentinel (HANDOFF has the exact list of what to delete, plus the
+open sub-question about `08_ctrl_ctrl_filter.py`, whose sentinel serves the opposite purpose since
+step 8 never subtracts). 2. Run the MHC flag-rate measurement. 3. Run step 6 with the HWE gate on
+and read the withheld count and the new list size. 4. `analysis_grain.py`. 5. Step 7.
+
+---
+
+## 2026-08-20 (later still) — the frequency test is plink's now, and HWE cells must show excess.
+
+**Did.** Replaced the hand-rolled frequency test with `plink --assoc`, added an excess-over-chance
+condition to the HWE channel, and added two diagnostics (per-arm call rate under the sentinel
+report, and a provenance sidecar). Not yet run.
+
+**The swap was verified BEFORE it was made, and it changes nothing.** On the largest cell (EUR/AD,
+`divco_hs`=121 vs `wgs_harm`=657, 7,538,809 variants):
+
+| | flagged |
+|---|---|
+| Python rule (`\|dAF\| > 0.05` AND `z > 5`) | 1,698 |
+| `plink --assoc`, CHISQ > 25, same `\|dAF\|` floor | **1,698** |
+| symmetric difference | **0 in both directions** |
+
+`plink --assoc` at CHISQ > 25 alone gives 2,008 — the extra 310 are variants that clear
+significance but fail the effect-size floor, predominantly low-frequency ones. At MAF ~20% in this
+cell `z > 5` already requires |dAF| ~ 0.14 so the floor never binds; at MAF ~2% it is reachable at
+~0.035, and the floor is what stops the list filling with low-frequency noise. Worth stating in the
+methods that the floor is **absolute**, so a 0.035 gap at MAF 2% — a large *relative* discordance —
+is kept anyway.
+
+**Why swap at all, given it changes nothing.** Communication. The Python version was a two-sample
+test of proportions with pooled variance — textbook, and algebraically the same statistic
+(z² = χ²) — but a hand-rolled implementation has to be taken on trust, while `plink --assoc` is a
+named 1-df allelic chi-square a collaborator recognises on sight. The verification above is what
+made the swap safe to do rather than a change with an unattributable effect.
+
+**Cost, and it contradicts a stated preference:** `--assoc` is plink1.9 only (plink2 dropped it for
+`--glm`, which is logistic regression on dosage — asymptotically equivalent, NOT identical, so it
+would have moved the flags and cost us the verification). `MOD_PLINK1` is therefore now an
+**unconditional** load in both `06_ancestry_qc.sh` and `af_concordance_build.sh`, where it used to
+load only for the optional mishap stage. `07_gwas.sh:49` records a deliberate preference not to
+depend on plink1.9; step 7 still doesn't, but step 6 stage B now does.
+
+**The HWE gate.** A cell contributes exclusions only if its rejection count exceeds the number
+expected by chance at `--hwe`. No multiplier — the bar is "more than chance explains". E/O is the
+Benjamini-Hochberg FDR estimate for that cell's rejections, so at or below 1.0× there is nothing to
+attribute. `HWE_REQUIRE_EXCESS=0` restores the old unconditional union.
+
+Considered and rejected as over-built for the problem: BH at q=0.05 on `plink2 --hardy` p-values
+(needs a different code path, an unverified column assumption, and a regression test, and it moves
+the *good* cell too), and moving the HWE channel to a post-hoc annotation on sumstats. The latter
+is conceptually right — for the association set, striking a variant from the sumstats is identical
+to never testing it, since `--glm` tests variants independently and 5e-8 is a fixed convention — and
+it stays available. **Note the one part that is genuinely not post-hoc-able: the PCA input, because
+PCs are covariates in every test.** That asymmetry is the reason the frequency channel must stay
+pre-applied whatever happens to the HWE one.
+
+**Expected:** list drops by at most 229; LRRK2's `chr12:40227079:C:T` comes off (AJ HWE was its only
+channel); CR1 stays (frequency channel, dropout mechanism); EUR eta² stays ~0.036 since
+`wgs_harm`'s 1,680 are retained.
+
+**Next.** `HWE_REQUIRE_EXCESS=0` must reproduce 4,415 exactly — which doubles as the regression test
+for the swap across ALL three cells, not just the one verified by hand. Then the default run.
+
+---
+
 ## 2026-08-20 (later) — both sentinel verdicts settled. The 2026-08-19 HWE claim was wrong.
 
 **Did.** Read the two sentinel variants out of job 27857727's `.afreq` (by header name this time)
