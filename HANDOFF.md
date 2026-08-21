@@ -32,7 +32,7 @@ stale against the run that produced it.
 | `clinical_common.py` | paths, readers, and the reconciliation rules both halves share. Imported, never run. |
 | `wgs_core.ipynb` | goal 2 orchestrator — ssh/sbatch driver. §3 step 6, §4 the before/after proof. |
 | `config.sh` | every path, derived from its own location. `submit.sh` — sbatch wrapper. |
-| `scripts/00`–`07` | env, genotools, normalize, merge, relatedness, excludelist, ancestry QC, GWAS. |
+| `scripts/00`–`08` | env, genotools, normalize, merge, relatedness, excludelist, ancestry QC, GWAS, ctrl-vs-ctrl. |
 | `scripts/af_concordance_build.{py,sh}` | step 6 **stage B**, in-job. The `.sh` is for re-tuning knobs only. |
 | `scripts/ancestry_qc_manifest.py` | step 6 stage E: `retained_samples_manifest.csv`, once per generation. |
 | `review/plot_af_filter_effect.py` | the collaborator-facing before/after figure + eta² tables. |
@@ -110,7 +110,10 @@ python3 review/plot_af_filter_effect.py \
     --before $MERGED_DIR/by_ancestry_qc/unfiltered/retained_samples_manifest.csv \
     --after  $MERGED_DIR/by_ancestry_qc/retained_samples_manifest.csv
 
-./submit.sh scripts/07_gwas.sh            # reads $GRAIN from clinical_core_out/
+# Step 7 reads §13's pheno/covar/contrasts files, NOT $GRAIN (changed 2026-08-20, known issue 1).
+# So analysis_grain.py above is a hard prerequisite, and a contrasts.csv predating 2026-08-21 lacks
+# the callset-skew columns -> step 7 exits 3 naming the missing one. Rerun the grain, don't patch it.
+./submit.sh scripts/07_gwas.sh            # reads $PHENO_SRC/$COVAR_SRC/$CONTRASTS_CSV
 python3 review/plot_gwas.py               # + mask_cohort_artifacts.py
 ./submit.sh scripts/08_ctrl_ctrl_filter.sh   # annotates; never subtracts (see known issue 2)
 ```
@@ -136,22 +139,33 @@ one way a list this job did not build can still reach stage C.
 
 ## Status
 
-**The live association set is step 6's rerun on the GATED 4,187-variant list, 2026-08-20 21:37.**
-`cohort_merged` is 172,497,055 variants × 13,334 samples (job 27429821). Step 6 has now run twice as
-a single pass: job **27857727** (7m13s, ungated 4,415 list) and then the rerun with the HWE
-excess-over-chance gate on, which produced **4,187** and regenerated stages C/D/E — that rerun's PCs
-and manifests are what step 7 must read. `analysis_grain.csv` is 12,495 rows × 22 cols, 17 viable
-contrasts, rebuilt on the gated PCs; the shape is identical to the ungated run, so no contrast
-crossed the ≥100 floor. *(Job ID for the rerun not yet recorded here — add it from
-`scripts/runlog.sh`.)*
+**THE PIPELINE IS COMPLETE THROUGH STEP 8 (2026-08-21).** Steps 0–8 have all run on the four-callset
+cohort. What is left is `review/plot_gwas.py` — local, on downloaded sumstats — and the write-up.
 
-**Both regression tests for the refactor passed.** Stage B rebuilt the exclusion list through
-`sample_annot.csv` and got 4,415 variants — the same count job 27697096 got through the grain — and
-§12a reports 12,495 shared IIDs with 0 callset and 0 dx mismatches.
+| | |
+|---|---|
+| `cohort_merged` | 172,497,055 variants × 13,334 samples (job 27429821) |
+| retained | **12,495** of 13,334 (839 excluded: 499 relative, 319 duplicate, 21 sex) |
+| exclusion list | **4,187** variants, HWE excess-over-chance gate ON (was 4,415 ungated) |
+| `analysis_grain.csv` | 12,495 rows × 22 cols, **17 viable contrasts** — EUR 14, AJ 3 |
+| step 7 GWAS | job **28004190** — 44/44 contrasts ran, λ_GC **1.0175–1.0549** |
+| step 8 ctrl-vs-ctrl | job **28037485** — annotated; primary sumstats untouched |
+
+Step 6 ran twice as a single pass: job **27857727** (7m13s, ungated) then a rerun with the gate on
+(2026-08-20 21:37), which produced 4,187 and regenerated stages C/D/E. **That rerun's PCs and
+manifests are the live ones.** *(Its job ID is not recorded here — recover it from
+`bash scripts/runlog.sh --md`.)*
+
+**λ_GC is well controlled everywhere**, 1.0175 (`AD_ampad_vs_control_ampad`) to 1.0549 (`PD_vs_AD`,
+the primary and most confounded). No contrast shows inflation needing intervention.
+
+**Read the two headline results in `PROJECT_LOG.md`'s "Where we are right now"**: the filter takes
+EUR's callset eta² 0.757 → 0.036, and step 8's licence boundary is what kept APOE-ε4 (P=3.55e-15) in
+the association set. Known issue 2 carries the second in full.
 
 ---
 
-## The sentinel tripwire is DELETED — done 2026-08-20, both call sites, not yet run
+## The sentinel tripwire is DELETED — done and RUN 2026-08-20/21, both call sites
 
 **Removed from `scripts/af_concordance_build.py`** (the import, `sentinel_detail()`, `keep_n()`, the
 `---- sentinel loci ----` block, `arm_index`, and the per-arm `.keep` writes in `assoc_pair()` —
@@ -186,12 +200,11 @@ is part of a known locus?") it labels flank hits with the gene's name, and **non
 "LRRK2±500kb" variants were in LRRK2** — they were in `SLC2A13` and `C12orf40`, 240–435 kb away.
 Same for SNCA (intergenic), GBA1 (`DAP3`), APOE (`ZNF285`/`ZNF229`).
 
-### NEXT ACTION — rsync, then step 6 with the HWE excess-over-chance gate
-
-Nothing has been run since the deletion. The gate is written and defaults ON (known issue 7, which
-records that it leaves CR1 excluded and un-excludes LRRK2). **Both rsyncs**, then step 6 (~7 min)
-and `analysis_grain.py` (~1 min), then step 7. Note `rsync` cannot express a deletion — but no file
-was retired here, only edited, so nothing needs removing by hand this time.
+**All of this has since RUN**, and the removal is confirmed live: `step6_summary.txt` from the gated
+rerun contains no sentinel output, and step 8's log (job 28037485) prints the unconditional
+screening-asymmetry note in place of the deleted known-loci block. The `gene_annot.py --at` CLI is
+what named APOE and HLA-DQB1 in step 8's results — the replacement path doing the job the 9-gene
+list was supposed to.
 
 ### The MHC aggregate question — NOT a gate on step 7. Decided 2026-08-20.
 
@@ -269,10 +282,13 @@ blocks anything.
 | step 6 rerun on the gated list | **done 2026-08-20** — 4,187-variant list applied; stage D/E regenerated |
 | grain on the gated PCs | **done 2026-08-20** — 12,495 × 22, 17 viable, unchanged shape |
 | eta² re-measurement on 4,187 | **done 2026-08-20** — EUR 0.757 → 0.036 (**95.3%**), i.e. the gate cost the filter nothing |
-| known issue 1 (pheno/covar) | **RESOLVED 2026-08-20** — step 7 reads §13's files; awk rebuild deleted. Not yet run |
-| 7 GWAS | **NEXT ACTION** — rsync `scripts/` + `config.sh`, then `./submit.sh scripts/07_gwas.sh` |
+| known issue 1 (pheno/covar) | **RESOLVED + RUN 2026-08-21** — step 7 reads §13's files; awk rebuild deleted |
 | MHC flag-rate measurement | **not a gate — deferred to write-up 2026-08-20.** Per-arm tables already settled subtract-vs-annotate; the rate is a methods number |
-| 8 ctrl-vs-ctrl + review plots | after step 7 |
+| callset-skew columns (issue 10) | **added 2026-08-21, NOT YET RUN** — §13 emits them; needs `analysis_grain.py` before any step-7 rerun |
+| 7 GWAS | **done + RUN 2026-08-21** — job 28004190, 44/44 ran, λ 1.0175–1.0549 |
+| 8 ctrl-vs-ctrl | **done + RUN 2026-08-21** — job 28037485. APOE + HLA-DQB1 flagged = screening asymmetry, see known issue 2 |
+| `review/plot_gwas.py` | **NEXT ACTION** — runs locally on downloaded sumstats |
+| write-up | after that. `PROJECT_LOG.md`'s top block lists the two headline results |
 
 **Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
 the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage
@@ -426,6 +442,32 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    This is also the licence boundary against step 6a: **6a may delete variants** because disease is
    held constant inside each of its cells; **step 8 may not**, because its control definitions
    differ across programs. Not duplicated reasoning — different entitlements.
+
+   **CONFIRMED EMPIRICALLY 2026-08-21, job 28037485 — this is no longer an argument, it is a
+   measurement.** All 4 flagged genome-wide hits in `EUR AD_ampad_vs_control_ampad` (the
+   *within-cohort* AD contrast, Δ=0.0, the cleanest one in the study) are APOE, including both
+   causal variants: `chr19:44908684:T:C` = **rs429358/ε4 at P=3.55e-15**, `chr19:44908822:C:T` =
+   rs7412/ε2, plus `chr19:44906745:G:A` inside the gene and `chr19:44912456:G:A` ~3 kb past its 3′
+   end. **`.ccfilt.tsv` would delete ε4 at 3.55e-15 from the study's cleanest AD contrast — so do
+   not use it for the AD contrasts.** Report the primary; name APOE as expected-and-retained.
+
+   Separately, 2 of the 3 genome-wide ctrl-vs-ctrl hits are `HLA-DQB1` (chr6:32,661,554/32,661,570),
+   ~30 kb from `HLA-DRB1/DRB5` — the same screening asymmetry at the study's other real finding. The
+   third, `chr3:106666502`, is intergenic 443 kb from any gene and is the one plausible genuine
+   artifact. **2 of 3 are real biology.**
+
+   **The corroboration that 6a worked:** every high-signal contrast came through with zero
+   control-flagging — `AD_vs_PSP` 2,319 hits / 0 flagged, `PD_vs_control` 2,523 / 0,
+   `PD_amppd_vs_control_amppd` 2,508 / 0. Step 8 is confirming, not correcting.
+
+   **Caveat to report rather than bury:** `PD_vs_MCI` is 3 hits, 3 flagged, 0 kept — its
+   `.ccfilt.tsv` is empty (n_ctrl = 159, thin to begin with).
+
+   **Methods sentence worth writing:** it is the demo's default `--ctrl-p 1e-5` that catches APOE.
+   All four APOE CTRL_P values are 1.3e-07 – 6.2e-06, i.e. *above* 5e-8, so APOE is not among the 3
+   genome-wide ctrl-vs-ctrl hits. At `--ctrl-p 5e-8` the AD contrasts would lose nothing. Left at
+   1e-5 deliberately — flagging is annotation, and a wider net with correct labels is safer — but
+   the threshold, not the mechanism, is what put APOE in the flagged set.
 
 3. **~~Step 6 runs TWICE~~ — RESOLVED 2026-08-19. It is one pass.** The two-pass shape was
    justified by a cycle that did not exist, and the write-up is in `scripts/06_ancestry_qc.sh`.
@@ -584,6 +626,42 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
 
    Also a third instance of known issue 1: that six-name detection is implemented independently in
    both places.
+
+10. **`confound_tag` measures PROGRAM, not callset — and `within_cohort` is not a clean bill of
+    health.** `AMPPD_CALLSETS = {"wb_dwgs", "br_dsnwgs"}`, so `delta_amppd` pools the two AMP-PD
+    callsets. A contrast can therefore score `delta_amppd = 0.0`, be tagged `within_cohort` — the
+    label `07_gwas.sh`'s header calls "the confound-free trusted backbone" — and still have one arm
+    carrying a callset the other lacks entirely.
+
+    **Measured on job 28004190 (2026-08-21).** `EUR PD_vs_DLB` is `within_cohort`, Δ=0.0, and step
+    7's differential-missingness filter removed **353,068** variants from it — roughly 6× any
+    genuinely cross-program contrast (`AD_vs_DLB` 65,245, `AD_vs_control` 63,393,
+    `control_amppd_vs_control_ampad` 62,344). Cause: BR-DSNWGS's 95 retained samples are 71 PD /
+    21 control / 3 null, so it contributes **no DLB at all**, and BR sits at ~50% missingness on the
+    common set. ~55 EUR genomes generated more technical asymmetry than the entire AMP-AD/AMP-PD
+    split. `PD_amppd_vs_control_amppd` has BR on both arms (71 v 21) and removed only 5,814,
+    which confirms the mechanism rather than assuming it.
+
+    **The results are protected; the label is what misleads.** The diffmiss filter is pre-association
+    and caught it — that contrast came back at λ=1.0402 with 318 hits. But anyone reading the summary
+    would rank `PD_vs_DLB` as cleaner than `AD_vs_DLB`, which is backwards.
+
+    **What was added, and what was deliberately NOT.** §13 now emits `max_callset_delta`,
+    `worst_callset` and `callset_one_sided` into `contrasts.csv`, and step 7 carries all three into
+    `gwas_summary.csv` and annotates `within_cohort` rows. `confound_tag` itself is unchanged — it
+    means "program", and redefining it would reinterpret every row already on record.
+
+    **Two rejected designs, recorded so they are not retried.** (1) *A percentage-point threshold.*
+    Reusing the tag's own 20pp yardstick looked tidy and fails: BR is ~55 of a 2,595-sample arm, so
+    its share delta is **2.1pp** and a 20pp rule misses the one case the check exists for. (2)
+    *One-sidedness as a warning.* It fires on 5 of 5 real contrasts, which is the objection that
+    retired the sentinel tripwire. One-sidedness is not the predictor — one-sidedness of a **sparse**
+    callset is. `PD_vs_control` is one-sided (`wgs_harm` 0 v 407) and removed only 6,331. BR is
+    sparse because a 97-donor joint call emits nothing at sites monomorphic in its own donors, and
+    §13 has no missingness data, so it cannot compute sparsity. **So `n_diffmiss_excluded` is the
+    signal and `callset_one_sided` only names which callset explains it.** Step 7 ends by ranking
+    `within_cohort` rows by that count — threshold-free, because a two-order-of-magnitude outlier is
+    obvious side by side.
 
 ## Provenance
 

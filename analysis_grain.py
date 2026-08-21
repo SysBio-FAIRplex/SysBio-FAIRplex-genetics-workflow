@@ -203,7 +203,7 @@ else:
 # |---|---|
 # | `covar_<ANC>.txt` | `#FID IID SEX [AGE] PC1..PC10`, missing as `NA` |
 # | `pheno_<ANC>_<CASE>_vs_<CTRL>.txt` | `#FID IID pheno`, case=2 control=1 |
-# | `contrasts.csv` | one row per written contrast: arm sizes, cohort composition, confound tag |
+# | `contrasts.csv` | one row per written contrast: arm sizes, cohort composition, confound tag, callset skew |
 #
 # **FID comes from the genotype fileset**, not the grain: plink2 matches on FID+IID and
 # defaults a missing FID to `0`, so the AMP-PD callsets — which carry a non-zero FID — need
@@ -262,6 +262,55 @@ def amppd_pct(g, mask):
     return 100.0 * int((mask & g.source_callset.isin(AMPPD_CALLSETS)).sum()) / n
 
 
+ONE_SIDED_MIN = 10   # samples in one arm, zero in the other, before it is worth naming
+
+
+def callset_skew(g, cm, km):
+    """-> (max |case% - ctrl%| over single callsets, which callset, one-sided callsets).
+
+    WHY THIS EXISTS SEPARATELY FROM delta_amppd. `delta_amppd` pools wb_dwgs with br_dsnwgs
+    because both are AMP-PD, which is the right grain for the disease/program confound — but it
+    is blind to an asymmetry *inside* a program, and on 2026-08-21 that turned out to matter a
+    lot. EUR PD-vs-DLB scored delta_amppd = 0.0 and was tagged `within_cohort`, the label
+    07_gwas.sh's own header calls "the confound-free trusted backbone" — while carrying
+    BR-DSNWGS on the PD arm and none on the DLB arm (BR's 95 retained samples are 71 PD /
+    21 control / 3 null, so it contributes no DLB at all). BR sits at ~50% missingness on the
+    common set, and step 7's differential-missingness filter excluded **353,068** variants from
+    that contrast — ~6x any genuinely cross-program contrast (~60k). Seventy-one samples
+    produced more technical asymmetry than the entire AMP-AD/AMP-PD split.
+
+    WHY ONE-SIDEDNESS AND NOT A PERCENTAGE GAP. The first version of this returned only the
+    max percentage-point delta and reused the confound tag's 20pp threshold, which was tidy and
+    WRONG: BR is ~55 of the 2,595-sample PD arm, so its delta is **2.1pp** and a 20pp rule misses
+    the one case the function was written to catch. The quantity that matters is not how far the
+    shares differ but whether a callset is ABSENT from one arm — every site that callset uniquely
+    fails to call is then differentially missing by construction, however small its share. So the
+    percentage figures are kept as description and the flag is categorical.
+
+    ONE_SIDED_MIN = 10 is a judgment call, not a derived number: enough samples for plink's 2x2
+    missingness test to resolve at these arm sizes, low enough to catch a callset the size of BR.
+
+    Reported per callset rather than as a BR-specific flag on purpose: BR is the instance, an
+    unbalanced callset is the class, and a fifth callset should be caught without an edit here.
+    Deliberately NOT folded into confound_tag — that tag means "program", and changing what it
+    measures would reinterpret every row already on record. A contrast can legitimately be
+    `within_cohort` AND callset-skewed; step 7 flags that pair rather than reclassifying it.
+    """
+    n_c, n_k = int(cm.sum()), int(km.sum())
+    if not n_c or not n_k:
+        return float("nan"), "NA", "NA"
+    worst, worst_cs, one_sided = -1.0, "NA", []
+    for cs in sorted(set(g.source_callset.dropna())):
+        in_cs = g.source_callset == cs
+        a, b = int((cm & in_cs).sum()), int((km & in_cs).sum())
+        d = abs(100.0 * a / n_c - 100.0 * b / n_k)
+        if d > worst:                      # sorted() iteration -> ties resolve alphabetically
+            worst, worst_cs = d, cs
+        if (a >= ONE_SIDED_MIN and b == 0) or (b >= ONE_SIDED_MIN and a == 0):
+            one_sided.append(f"{cs}({a}v{b})")
+    return worst, worst_cs, (";".join(one_sided) if one_sided else "none")
+
+
 def confound_tag(delta):
     """<=20pp apart -> the arms share a cohort base; >=70pp -> they are effectively disjoint."""
     if pd.isna(delta):
@@ -315,11 +364,18 @@ else:
             n_case, n_ctrl = int(cm.sum()), int(km.sum())
             case_pct, ctrl_pct = amppd_pct(g, cm), amppd_pct(g, km)
             delta = abs(case_pct - ctrl_pct)
+            cs_delta, cs_worst, cs_one_sided = callset_skew(g, cm, km)
             written.append({
                 "ancestry": anc, "contrast": tag, "case_arm": case, "ctrl_arm": ctrl,
                 "n_case": n_case, "n_ctrl": n_ctrl,
                 "case_pct_amppd": round(case_pct, 1), "ctrl_pct_amppd": round(ctrl_pct, 1),
                 "delta_amppd": round(delta, 1), "confound_tag": confound_tag(delta),
+                # Per-callset asymmetry, which delta_amppd cannot see. The first two describe;
+                # callset_one_sided is the one that predicts differential missingness, because a
+                # callset absent from an arm makes every site it uniquely fails to call
+                # differentially missing regardless of how small its share is.
+                "max_callset_delta": round(cs_delta, 1), "worst_callset": cs_worst,
+                "callset_one_sided": cs_one_sided,
                 "viable_ge100": int(n_case >= 100 and n_ctrl >= 100)})
 
     if written:

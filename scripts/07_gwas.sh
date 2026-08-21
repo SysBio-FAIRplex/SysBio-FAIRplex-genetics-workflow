@@ -212,18 +212,19 @@ fi
 CROWS=${OUT_DIR}/.contrast_rows.tsv
 awk -F, -v ANCS=" ${ANCS} " -v WANT=" ${CONTRASTS} " '
     NR==1 { for(i=1;i<=NF;i++){ k=$i; gsub(/^[ \t]+|[ \t]+$/,"",k); h[k]=i }
-            need="ancestry contrast case_arm ctrl_arm n_case n_ctrl case_pct_amppd ctrl_pct_amppd delta_amppd confound_tag viable_ge100"
+            need="ancestry contrast case_arm ctrl_arm n_case n_ctrl case_pct_amppd ctrl_pct_amppd delta_amppd confound_tag max_callset_delta worst_callset callset_one_sided viable_ge100"
             n=split(need,w," ")
             for(j=1;j<=n;j++) if(!(w[j] in h)){ printf "MISSING_COLUMN\t%s\n", w[j] > "/dev/stderr"; bad=1 }
             if(bad) exit 3
             next }
     { if (index(ANCS, " " $h["ancestry"] " ") == 0) next
       if (WANT !~ /^ *$/ && index(WANT, " " $h["contrast"] " ") == 0) next
-      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
         $h["ancestry"], $h["contrast"], $h["case_arm"], $h["ctrl_arm"],
         $h["n_case"], $h["n_ctrl"], $h["case_pct_amppd"], $h["ctrl_pct_amppd"],
-        $h["delta_amppd"], $h["confound_tag"], $h["viable_ge100"] }
-' "$CONTRASTS_CSV" > "$CROWS" || { echo "ERROR: $CONTRASTS_CSV is missing a required column (above)" >&2; exit 3; }
+        $h["delta_amppd"], $h["confound_tag"], $h["max_callset_delta"],
+        $h["worst_callset"], $h["callset_one_sided"], $h["viable_ge100"] }
+' "$CONTRASTS_CSV" > "$CROWS" || { echo "ERROR: $CONTRASTS_CSV is missing a required column (above). If it predates 2026-08-21 it has no callset-skew columns — rerun analysis_grain.py." >&2; exit 3; }
 
 NROWS=$(wc -l < "$CROWS")
 [[ "$NROWS" -gt 0 ]] || { echo "ERROR: no contrasts.csv rows matched ANCS='${ANCS}' CONTRASTS='${CONTRASTS}'" >&2; exit 1; }
@@ -249,7 +250,7 @@ else
 fi
 
 # summary header
-echo "ancestry,contrast,case_arm,ctrl_arm,n_case,n_ctrl,case_pct_amppd,ctrl_pct_amppd,delta_amppd,confound_tag,viable_ge100,ran,lambda_gc,lambda_1000,n_diffmiss_excluded,n_beta_outlier,n_gwsig,sumstats_file" > "$SUMMARY"
+echo "ancestry,contrast,case_arm,ctrl_arm,n_case,n_ctrl,case_pct_amppd,ctrl_pct_amppd,delta_amppd,confound_tag,max_callset_delta,worst_callset,callset_one_sided,viable_ge100,ran,lambda_gc,lambda_1000,n_diffmiss_excluded,n_beta_outlier,n_gwsig,sumstats_file" > "$SUMMARY"
 
 printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s\n" "ANC" "contrast" "n_case" "n_ctrl" "delta" "confound" "viable" "status" "lam_gc" "lam_1k" "diffmiss" "hits"
 
@@ -276,7 +277,7 @@ for ANC in $ANCS; do
 done
 [[ ${#ANC_OK[@]} -gt 0 ]] || { echo "ERROR: no stratum had both a fileset and a §13 covar file" >&2; exit 1; }
 
-while IFS=$'\t' read -r ANC TAG CASE_ARM CTRL_ARM NCASE NCTRL CASE_PCT CTRL_PCT DELTA TAGC VIABLE_N; do
+while IFS=$'\t' read -r ANC TAG CASE_ARM CTRL_ARM NCASE NCTRL CASE_PCT CTRL_PCT DELTA TAGC CSDELTA CSWORST CSONESIDED VIABLE_N; do
         [[ -n "${ANC_OK[$ANC]:-}" ]] || continue
         QC=${QC_DIR}/cohort_${ANC}_qc
         COVAR=${COVAR_SRC}/covar_${ANC}.txt
@@ -287,10 +288,34 @@ while IFS=$'\t' read -r ANC TAG CASE_ARM CTRL_ARM NCASE NCTRL CASE_PCT CTRL_PCT 
         # could only introduce disagreement.
         VIABLE="no"; [[ "$VIABLE_N" == "1" ]] && VIABLE="yes"
 
+        # ── a callset present in one arm and absent from the other ──
+        # delta_amppd pools wb_dwgs with br_dsnwgs, so a contrast can read as the confound-free
+        # backbone while one arm carries a callset the other does not. Measured 2026-08-21: EUR
+        # PD_vs_DLB is delta_amppd 0.0 / within_cohort and lost 353,068 variants to differential
+        # missingness, ~6x any genuinely cross-program contrast, because BR-DSNWGS is 71 PD /
+        # 0 DLB at ~50% missingness.
+        #
+        # ANNOTATION, NOT A WARNING, and the distinction is load-bearing. One-sidedness was tried
+        # as a warning first and fires on 5 of 5 real contrasts, which makes it worthless — the
+        # same objection that retired the sentinel tripwire. It is not one-sidedness that predicts
+        # the blow-up but one-sidedness of a SPARSE callset: PD_vs_control is also one-sided
+        # (wgs_harm 0v407) and excluded 6,331 variants, while PD_vs_DLB's br_dsnwgs(55v0) excluded
+        # 353,068. BR is sparse because a 97-donor joint call emits nothing at sites monomorphic in
+        # its own donors; §13 has no missingness data and cannot know that.
+        #
+        # So n_diffmiss_excluded on this same line is the signal, and this string only says WHICH
+        # callset explains it. Shown only for within_cohort rows: for cross_cohort the tag has
+        # already said the arms are disjoint, so one-sidedness there is not news.
+        SKEW=""
+        if [[ "$TAGC" == "within_cohort" && -n "$CSONESIDED" \
+              && "$CSONESIDED" != "none" && "$CSONESIDED" != "NA" ]]; then
+            SKEW="  [one-sided: ${CSONESIDED} — read n_diffmiss beside it]"
+        fi
+
         if [[ ! -f "$PHENO" ]]; then
-            printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s\n" \
-                "$ANC" "$TAG" "$NCASE" "$NCTRL" "$DELTA" "$TAGC" "$VIABLE" "no_pheno_file" "NA" "NA" "NA" "NA"
-            echo "${ANC},${TAG},${CASE_ARM},${CTRL_ARM},${NCASE},${NCTRL},${CASE_PCT},${CTRL_PCT},${DELTA},${TAGC},${VIABLE},no_pheno_file,NA,NA,NA,NA,NA," >> "$SUMMARY"
+            printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s%s\n" \
+                "$ANC" "$TAG" "$NCASE" "$NCTRL" "$DELTA" "$TAGC" "$VIABLE" "no_pheno_file" "NA" "NA" "NA" "NA" "$SKEW"
+            echo "${ANC},${TAG},${CASE_ARM},${CTRL_ARM},${NCASE},${NCTRL},${CASE_PCT},${CTRL_PCT},${DELTA},${TAGC},${CSDELTA},${CSWORST},${CSONESIDED},${VIABLE},no_pheno_file,NA,NA,NA,NA,NA," >> "$SUMMARY"
             continue
         fi
 
@@ -392,9 +417,9 @@ while IFS=$'\t' read -r ANC TAG CASE_ARM CTRL_ARM NCASE NCTRL CASE_PCT CTRL_PCT 
             RAN="skip_min_arm"
         fi
 
-        printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s\n" \
-            "$ANC" "$TAG" "$NCASE" "$NCTRL" "$DELTA" "$TAGC" "$VIABLE" "$RAN" "$LAM_GC" "$LAM_1K" "$NDIFF" "$NHIT"
-        echo "${ANC},${TAG},${CASE_ARM},${CTRL_ARM},${NCASE},${NCTRL},${CASE_PCT},${CTRL_PCT},${DELTA},${TAGC},${VIABLE},${RAN},${LAM_GC},${LAM_1K},${NDIFF},${NBETA},${NHIT},${SUMFILE##*/}" >> "$SUMMARY"
+        printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s%s\n" \
+            "$ANC" "$TAG" "$NCASE" "$NCTRL" "$DELTA" "$TAGC" "$VIABLE" "$RAN" "$LAM_GC" "$LAM_1K" "$NDIFF" "$NHIT" "$SKEW"
+        echo "${ANC},${TAG},${CASE_ARM},${CTRL_ARM},${NCASE},${NCTRL},${CASE_PCT},${CTRL_PCT},${DELTA},${TAGC},${CSDELTA},${CSWORST},${CSONESIDED},${VIABLE},${RAN},${LAM_GC},${LAM_1K},${NDIFF},${NBETA},${NHIT},${SUMFILE##*/}" >> "$SUMMARY"
 done < "$CROWS"
 
 echo "=========================================="
@@ -403,4 +428,30 @@ echo "Summary: ${SUMMARY}"
 echo "Sumstats: ${OUT_DIR}/gwas_<ANC>_<CASE>_vs_<CTRL>.pheno.glm.logistic.hybrid"
 echo "  + .filtered.tsv (ADD only, |BETA|<=${BETA_MAX})   + .hits.tsv (P<${GWSIG}, from the filtered set)"
 echo "Viable (>=100/arm) rows  [ANC contrast (case/ctrl) confound  lambda_gc/lambda_1000]:"
-awk -F, 'NR>1 && $11=="yes"{printf "  %-4s %-16s (%s/%s)  %-13s  lam=%s / l1000=%s\n",$1,$2,$5,$6,$10,$13,$14}' "$SUMMARY"
+# By header name, not position: this block silently pointed at the wrong columns the moment two
+# were inserted before viable_ge100 (2026-08-21). Rule 4 applies to a file this script wrote too.
+awk -F, '
+    NR==1 { for(i=1;i<=NF;i++) h[$i]=i; next }
+    $h["viable_ge100"]=="yes" {
+        skew=""
+        if ($h["confound_tag"]=="within_cohort" && $h["max_callset_delta"]!="NA" \
+            && $h["max_callset_delta"]+0 >= 20)
+            skew=sprintf("  <<< callset-skewed: %s d%spp", $h["worst_callset"], $h["max_callset_delta"])
+        printf "  %-4s %-30s (%s/%s)  %-13s  lam=%s / l1000=%s%s\n",
+            $h["ancestry"], $h["contrast"], $h["n_case"], $h["n_ctrl"],
+            $h["confound_tag"], $h["lambda_gc"], $h["lambda_1000"], skew }' "$SUMMARY"
+echo
+# ── within_cohort contrasts ranked by how much the diffmiss filter had to remove ──
+# No threshold, deliberately: the comparison IS the finding. `within_cohort` is the label this
+# script's own header calls "the confound-free trusted backbone", and delta_amppd pools wb_dwgs
+# with br_dsnwgs, so a row can wear that label while one arm carries a sparse callset the other
+# lacks. Ranked side by side, an order-of-magnitude outlier needs no magic number to be obvious.
+echo "within_cohort rows by variants removed for differential missingness (descending):"
+echo "  a large value here means the arms differed TECHNICALLY despite the within_cohort tag."
+awk -F, '
+    NR==1 { for(i=1;i<=NF;i++) h[$i]=i; next }
+    $h["confound_tag"]=="within_cohort" && $h["viable_ge100"]=="yes" {
+        printf "  %10s  %-4s %-30s one-sided=%s\n",
+            $h["n_diffmiss_excluded"], $h["ancestry"], $h["contrast"], $h["callset_one_sided"] }' \
+    "$SUMMARY" | sort -k1 -gr
+echo "See HANDOFF known issue 10 — the tag measures PROGRAM, not callset."

@@ -238,10 +238,16 @@ def main():
 
         # figure title with the review-relevant metadata
         if row is not None:
+            # callset_one_sided / n_diffmiss_excluded are read with .get so an older
+            # gwas_summary.csv (pre-2026-08-21, no callset-skew columns) still plots.
+            one_sided = str(row.get("callset_one_sided", "") or "")
+            skew = ""
+            if one_sided not in ("", "none", "NA", "nan"):
+                skew = f"   one-sided callset={one_sided} (diffmiss removed {row.get('n_diffmiss_excluded', '?')})"
             sub = (f"case={row['case_arm']} (n={row['n_case']}, {row['case_pct_amppd']}% AMP-PD)   "
                    f"ctrl={row['ctrl_arm']} (n={row['n_ctrl']}, {row['ctrl_pct_amppd']}% AMP-PD)   "
                    f"confound={row['confound_tag']} (Δ={row['delta_amppd']})   "
-                   f"viable≥100={row['viable_ge100']}")
+                   f"viable≥100={row['viable_ge100']}{skew}")
         else:
             sub = f"{len(df):,} variants"
         fig.suptitle(f"{anc} — {contrast.replace('_', ' ')}", fontsize=13, y=0.995)

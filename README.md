@@ -121,8 +121,9 @@ the root from its own location, and `clinical_common.py` does the same. To move 
     sample_annot.csv                                 ←   file cannot go stale against its producer.
     individual_core.csv                              ← §9 audit table -> analysis_grain.py
     genome_crosswalk.csv                             ← §9 audit table -> analysis_grain.py
-    analysis_grain.csv                               ← step 7 reads this
-    qc_outcomes.csv  contrasts.csv  pheno/  covar/
+    analysis_grain.csv                               ← the grain. Step 7 does NOT read it directly
+    pheno/  covar/  contrasts.csv                    ←   — it reads THESE (§13), as of 2026-08-20
+    qc_outcomes.csv
   results/                                           ← plots + eta^2 evidence (mostly gitignored)
   scripts/                                           ← see Scripts below
     logs/                                            ← all sbatch .o/.e files
@@ -169,7 +170,8 @@ scripts/
                                    A unfiltered QC+PCA   B build AF exclusion list from A
                                    C apply it            D filtered QC+PCA
                                    E both sample manifests
-  07_gwas.sh                   ← plink2 --glm per ancestry per contrast
+  07_gwas.sh                   ← plink2 --glm per ancestry per contrast. Reads §13's pheno/covar/
+                                 contrasts.csv — it does NOT rebuild arms from the grain.
   08_ctrl_ctrl_filter.{py,sh}  ← control-vs-control artifact scan. ANNOTATES, never subtracts.
 
   # ── called by step 6, not submitted directly ──────────────────────────────
