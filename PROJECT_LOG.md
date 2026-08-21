@@ -139,6 +139,90 @@ three callsets were sex-updated from `<dataset>/metadata/`, not from the correct
 
 ---
 
+## 2026-08-20 (night, last) — eta² re-measured on the gated list. The HWE gate cost the filter nothing.
+
+**Did.** Pulled both step-6 manifests to the laptop and ran `review/plot_af_filter_effect.py
+--label gated4187`. Wrote `results/pca/af_filter_effect_gated4187.{png,csv}` and
+`..._per_pc.csv` — **the first eta² tables ever actually committed**, see below.
+
+**Found — the prediction held, and the headline claim is safe on the live list.**
+
+| stratum | n | before | after | reduction | on the ungated 4,415 |
+|---|---|---|---|---|---|
+| EUR | 10,135 | 0.757 (PC2) | **0.036** (PC6) | **95.3%** | 0.036 / 95.2% |
+| AJ | 1,518 | 0.984 (PC1) | 0.962 (PC1) | 2.2% | identical |
+| AAC | 226 | 0.877 | 0.876 | 0.1% | — |
+| AFR | 191 | 0.708 | 0.713 | **−0.6%** | — |
+| CAH | 106 | 0.309 | 0.199 | 35.6% | — |
+| AMR | 185 | 0.203 | 0.170 | 16.0% | — |
+
+Removing the 228 HWE-only variants moved EUR's reduction by 0.001. That is the direct test of the
+"HWE-only additions are general variant QC, not cohort-artifact removal" reading, and it passed:
+the frequency channel is carrying the effect, and the gate touched only the channel that was not.
+**Quote 95.3% against the 4,187 list; the 95.2% figure was the 4,415 list and both are now on
+record.** AJ is unchanged to three decimals, as expected — the list holds no AJ-derived flags.
+
+**Ruled out — AFR's negative reduction is not a regression.** AAC and AFR eta² is one BR sample each
+at 39.7σ / 19.6σ (2026-08-18 entry), so those rows are dominated by a single point and move by noise
+in either direction. CAH and AMR are new numbers, not previously in the two-row table; none of the
+four strata fields a `viable_ge100` contrast, so none of these PCs reaches a GWAS.
+
+**Two operational notes worth keeping.** The laptop's system python3 has pandas/numpy but **no
+matplotlib** — this script needs `.venv/bin/python`, and the failure is an import traceback at line
+40, before any output. And both manifests share the basename `retained_samples_manifest.csv`, so
+they must land in separate directories; pulling them into one would compare a file against itself
+and report a ~0 reduction that looks exactly like "the filter does nothing".
+
+**Closed the gap between `.gitignore` and reality.** The negations `!results/pca/*_eta2.csv` and
+`!results/pca/af_filter_effect*.csv` were added 2026-08-19 with a written rationale — a *baseline*
+cannot be regenerated later because that needs a state that no longer exists — but no file had ever
+been produced under them, so `results/` was entirely untracked and the 0.757/0.036 numbers survived
+only as hand-typed text in two markdown files. That is precisely the fragility the negation was
+meant to fix, left in place for a day. These three files are the first to land there.
+
+---
+
+## 2026-08-20 (night, later still) — pheno/covar duplication RESOLVED. Step 7 reads §13's files.
+
+**Changed.** `07_gwas.sh` now reads `clinical_core_out/{pheno,covar}/` and `contrasts.csv` instead of
+rebuilding both in awk from `$GRAIN`; the awk blocks (covar builder, pheno builder + arm counting,
+FID map, confound-tag arithmetic, age-column sniffing) are deleted. `config.sh` gained
+`PHENO_SRC` / `COVAR_SRC` / `CONTRASTS_CSV` and lost the NOTE that documented the duplication.
+Known issue 1 is closed; `CLAUDE.md`'s rule-2 corollary now lists one live duplication, not two.
+
+**Why this one and not the other direction.** §13's docstring already asserted "Step 7 reads these
+files and runs `plink2 --glm`; it does not parse the grain and does not rebuild an arm in awk, so the
+definition exists once and cannot drift between the two." That was false, and a false claim in the
+authoritative implementation is worse than no claim. Making it true also puts the definition of "who
+is a case" next to the reconciliation logic that produces it, and makes the pheno files inspectable
+before a 3-hour job starts rather than materialising inside it.
+
+**Verified before committing to it: the formats were already identical** — covar `#FID IID SEX [AGE]
+PC1..PC10` tab-delimited with `NA` for missing, pheno `#FID IID pheno` with case=2/ctrl=1, same
+`<case>_vs_<ctrl>` tag convention with `@`→`_`. And §13's `FAM_DIR = PCA_DIR = MERGED/by_ancestry_qc`
+is the same directory step 7 takes `--bfile` from, so the FIDs come from the same `.fam`. This was a
+wiring change, not a reimplementation.
+
+**Three behaviour changes, all deliberate, all recorded in HANDOFF issue 1.** `MIN_ARM` can now only
+*raise* the 20-per-arm floor (§13 wrote no file below it), so `MIN_ARM=0` no longer forces every
+contrast. `EXCLUDE_DUAL` is gone from step 7 and lives only in §13 — which is what §13 argued for,
+and step 7 now **refuses** the old `--export=EXCLUDE_DUAL=1` rather than silently ignoring it, since
+a sensitivity run returning as the primary is the worse failure. The age decision is §13's.
+
+**Found — the old "PREREQ" was a comment where a check belonged.** The header said re-running step 6
+invalidates the grain and "this silently runs on stale covariates", which is rule 3 exactly: the
+warning was unactionable and nothing enforced it. Replaced with two guards — `covar_<ANC>.txt` must
+post-date `cohort_<ANC>_pca.eigenvec` (exit 4), and every pheno IID must appear in the `.fam` being
+tested (exit 5). The second is not redundant: a covar can be newer than the eigenvec and still list
+samples the current fileset does not contain, which mtime cannot see.
+
+**`contrasts.csv` is read by header name** (rule 4), emitting a fixed-order tab stream for the shell
+loop. Tested against a deliberately column-shuffled CSV — parsed correctly — and against a renamed
+column, which aborts naming the missing field rather than mislabelling a contrast. Arms containing
+`@` survive the round-trip. Not yet run on the cluster.
+
+---
+
 ## 2026-08-20 (night, later) — HWE gate RUN. List 4,415 → 4,187. Both predictions held.
 
 **Did.** rsynced the sentinel removal, reran step 6 with `HWE_REQUIRE_EXCESS` at its default (1),

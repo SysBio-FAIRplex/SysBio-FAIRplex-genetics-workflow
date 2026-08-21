@@ -11,12 +11,24 @@
 #
 # STEP 7 — per-ancestry, per-contrast GWAS on the QC'd grain.
 #
-# For each viable ancestry (EUR/AJ/AAC/AFR/AMR/CAH — the strata step 6 produced PCs for) and each
-# case/control contrast on dx_detailed, this: builds a covar file (sex + PC1..PC10) and a case/control
-# pheno file straight from analysis_grain.csv, then runs plink2 --glm on cohort_<ANC>_qc. Every
-# attempt is logged to gwas_summary.csv with arm counts, the empirical cohort composition of each arm,
-# a data-driven confound tag, and the >=100-cases/arm viability flag — so the post-hoc filter and the
-# interpretation guide are computed, never hand-counted.
+# For each row of $CONTRASTS_CSV whose stratum has a QC'd fileset, this reads the pheno and covar
+# files §13 of analysis_grain.py wrote and runs plink2 --glm on cohort_<ANC>_qc. Every attempt is
+# logged to gwas_summary.csv with arm counts, the empirical cohort composition of each arm, a
+# data-driven confound tag, and the >=100-cases/arm viability flag — all carried through from
+# contrasts.csv, so the post-hoc filter and the interpretation guide are computed once, never
+# hand-counted and never re-derived here.
+#
+# IT READS §13'S FILES; IT DOES NOT REBUILD THEM. Until 2026-08-20 this script rebuilt both the
+# covar and the pheno files in awk from $GRAIN, while §13 wrote its own copies that nothing read —
+# two implementations of "who is a case", which is exactly the drift this project has been bitten by
+# three times. §13 is the sole definition now. Consequences worth knowing:
+#   * MIN_ARM cannot go BELOW §13's own 20 — a contrast under 20 per arm has no file to read. It
+#     still works as a raised floor. MIN_ARM=0 no longer means "force literally all".
+#   * EXCLUDE_DUAL is gone from here. Set it in analysis_grain.py and rerun to a separate
+#     CLINICAL_OUT, then point PHENO_SRC/COVAR_SRC/CONTRASTS_CSV at it. §13 argues for that
+#     directly: a sensitivity run should be a recorded artifact, not a flag remembered at run time.
+#   * The age covariate is decided in §13. This script no longer sniffs the grain header for it,
+#     because the covar file either carries an AGE column or does not.
 #
 # CONTRASTS (case arm listed FIRST -> coded 2; control arm -> 1). An arm may be source-restricted as
 #   "<dx>@amppd" (wb_dwgs) or "<dx>@ampad" (the AMP-AD callsets); bare dx = any source.
@@ -49,12 +61,13 @@
 #   Implemented via two --missing passes + an awk chi-square rather than --test-missing, which is a
 #   plink1.9 feature and is not relied on being present in this plink2 build.
 #
-# AGE COVARIATE: included when the grain carries an age column, otherwise omitted with a warning.
-#   Age is the dominant confounder for both AD and PD, so its absence is a real limitation — but the
-#   cohorts do not currently supply a commensurable variable (AMP-AD gives age at death, AMP-PD gives
-#   age at baseline/analysis), so this cannot simply be forced. Until the phenotype track emits a
-#   harmonized age, the within-cohort contrasts are the only ones where age would be comparable
-#   anyway. Detected by header name: age | age_analysis | agedeath | age_baseline | age_cov.
+# AGE COVARIATE: decided in §13, which emits an AGE column into covar_<ANC>.txt the moment the
+#   grain carries a recognizable age column. Age is the dominant confounder for both AD and PD, so
+#   its absence is a real limitation — but the cohorts do not supply a commensurable variable
+#   (AMP-AD gives age at death, AMP-PD age at baseline/analysis), so it cannot be forced. Until the
+#   phenotype track emits a harmonized age, the within-cohort contrasts are the only ones where age
+#   would be comparable anyway. This script reports what the covar file actually contains rather
+#   than sniffing the grain itself — see HANDOFF known issue 9.
 #
 # CONFOUND (interpretation guide, NOT a filter): disease is confounded with study program
 #   (AMP-PD = wb_dwgs ; AMP-AD = wgs_harm/divco_hs/fused). The summary reports each arm's %AMP-PD and
@@ -65,22 +78,23 @@
 # DUAL-SOURCE 87 (source_callset == "divco_hs|wgs_harm"): these are same-IID DivCo+WGS_Harm genomes
 #   FUSED at merge time (one row, not a duplicate). Decision (2026-07-24): accept fused as-is; their
 #   DivCo-only sites are dropped by the per-ancestry --geno anyway (they're a tiny minority of EUR).
-#   Set EXCLUDE_DUAL=1 to drop the 87 from all pheno files for a cheap WGS_Harm-only sensitivity run
-#   (no re-merge needed).
+#   The WGS_Harm-only sensitivity run is now EXCLUDE_DUAL in analysis_grain.py, not a flag here.
 #
-# RUN POLICY: attempt every ANC x contrast whose BOTH arms have >= MIN_ARM samples (default 20, for
-#   model convergence); flag >=100-both as the GWAS-viability cut. MIN_ARM=0 forces literally all.
+# RUN POLICY: attempt every contrasts.csv row whose stratum has a fileset and whose BOTH arms reach
+#   MIN_ARM (default 20); flag >=100-both as the GWAS-viability cut. MIN_ARM only raises the floor —
+#   §13 wrote no file below 20, so it cannot lower it.
 #
-# GUARDRAIL: sbatch script, run by the USER (reads genotypes + the id-bearing grain = "the machine").
-#   The AI writes it only. Sumstats + summary are the deliverables; stdout is aggregate counts.
+# GUARDRAIL: sbatch script, run by the USER (reads genotypes + id-bearing pheno files = "the
+#   machine"). The AI writes it only. Sumstats + summary are the deliverables; stdout is counts.
 #
-# PREREQ: analysis_grain.csv must be at $GRAIN and must carry the PCs from the CURRENT step-6 run.
-#   It is written by analysis_grain.py §12 (was clinical_core §12 until the clinical side was
-#   split in two). Re-running step 6 invalidates it — regenerate and
-#   re-copy, or this silently runs on stale covariates. See README §3 step 7.
+# PREREQ: §13's outputs must come from the CURRENT step-6 run. Re-running step 6 moves the PCs and
+#   invalidates them. This is now CHECKED rather than warned about: every covar file must be newer
+#   than its stratum's .eigenvec, and every pheno IID must appear in the .fam being tested. A stale
+#   generation aborts the run instead of silently producing associations on the wrong covariates.
 #
 #   ./submit.sh scripts/07_gwas.sh
-#   (sensitivity: ./submit.sh scripts/07_gwas.sh --export=EXCLUDE_DUAL=1,OUT_SUBDIR=gwas_nodual)
+#   (sensitivity: rerun analysis_grain.py with EXCLUDE_DUAL=True to a separate CLINICAL_OUT, then
+#    ./submit.sh scripts/07_gwas.sh --export=PHENO_SRC=...,COVAR_SRC=...,CONTRASTS_CSV=...,OUT_SUBDIR=gwas_nodual)
 set -o pipefail
 
 # Resolve the bundle root and load the one file that knows where anything lives.
@@ -89,22 +103,24 @@ source "${BUNDLE}/config.sh"
 
 QC_DIR=${MERGED_DIR}/by_ancestry_qc
 OUT_DIR=${QC_DIR}/${OUT_SUBDIR:-gwas}
-PHENO_DIR=${OUT_DIR}/pheno
-COVAR_DIR=${OUT_DIR}/covar
 SUMMARY=${OUT_DIR}/gwas_summary.csv
-mkdir -p "$OUT_DIR" "$PHENO_DIR" "$COVAR_DIR"
+mkdir -p "$OUT_DIR"
 
 # ── knobs (locked defaults; overridable via --export) ──
-ANCS=${ANCS:-"EUR AJ AAC AFR AMR CAH"}                 # the 6 strata with PCs
-CONTRASTS=${CONTRASTS:-"PD:AD PD:DLB PD:MCI PD:PSP PD:control PD:other AD:MCI AD:DLB AD:PSP AD:control AD:other control@amppd:control@ampad PD@amppd:control@amppd AD@ampad:control@ampad"}
-MIN_ARM=${MIN_ARM:-20}                                  # both arms must reach this to attempt
+ANCS=${ANCS:-"EUR AJ AAC AFR AMR CAH"}                 # the 6 strata with PCs. Filters contrasts.csv.
+CONTRASTS=${CONTRASTS:-""}                              # optional filter: space-separated contrast
+                                                        # tags as they appear in contrasts.csv
+                                                        # (e.g. "PD_vs_AD AD_ampad_vs_control_ampad").
+                                                        # Empty = every row for the selected strata.
+MIN_ARM=${MIN_ARM:-20}                                  # both arms must reach this to attempt.
+                                                        # RAISES the floor only — §13 wrote nothing
+                                                        # below 20, so this cannot lower it.
 MIN_MAF=${MIN_MAF:-0.05}                                 # common-variant floor. At these arm sizes MAF<0.05
                                                          # has too few minor alleles for a stable single-variant
                                                          # test AND is where cross-cohort batch artifacts
                                                          # concentrate (measured). Computed per-contrast (--keep
                                                          # the arms), so it's MAF in the tested samples, not the
                                                          # pooled stratum. Rare/low-freq -> separate burden pass.
-EXCLUDE_DUAL=${EXCLUDE_DUAL:-0}                          # 1 -> drop the fused 87 (WGS_Harm-only sensitivity)
 DIFFMISS_P=${DIFFMISS_P:-1e-4}                           # per-contrast differential-missingness cut
 DIFFMISS_MINDIFF=${DIFFMISS_MINDIFF:-0.02}               # AND: minimum |arm missingness difference|.
                                                          # A p-value alone does not transfer across strata —
@@ -168,30 +184,68 @@ lambda_from_sumstats() {
 echo "=========================================="
 echo "Step 7 — per-ancestry per-contrast GWAS"
 echo "Job: ${SLURM_JOB_ID:-NA}  Node: ${SLURMD_NODENAME:-NA}  Start: $(date)"
-echo "Grain: ${GRAIN}"
+echo "Contrasts: ${CONTRASTS_CSV}"
+echo "Pheno:     ${PHENO_SRC}"
+echo "Covar:     ${COVAR_SRC}"
 echo "QC dir: ${QC_DIR}   Out: ${OUT_DIR}"
-echo "Ancestries: ${ANCS}"
-echo "MIN_ARM=${MIN_ARM}  EXCLUDE_DUAL=${EXCLUDE_DUAL}"
+echo "Ancestries: ${ANCS}   MIN_ARM=${MIN_ARM}"
 echo "=========================================="
 
-[[ -f "$GRAIN" ]] || { echo "ERROR: grain not found: $GRAIN (rsync it from local first)" >&2; exit 1; }
+# ── EXCLUDE_DUAL moved to §13. Refuse rather than ignore it: a sensitivity run that silently ──
+# ── came back as the primary is worse than a failed submission.                              ──
+if [[ -n "${EXCLUDE_DUAL:-}" && "${EXCLUDE_DUAL}" != "0" ]]; then
+    echo "ERROR: EXCLUDE_DUAL is no longer handled here (removed 2026-08-20)." >&2
+    echo "  Arms are defined once, in analysis_grain.py §13. Set EXCLUDE_DUAL=True there, rerun it" >&2
+    echo "  to a separate CLINICAL_OUT, then point this script at that generation:" >&2
+    echo "  --export=PHENO_SRC=<dir>/pheno,COVAR_SRC=<dir>/covar,CONTRASTS_CSV=<dir>/contrasts.csv,OUT_SUBDIR=gwas_nodual" >&2
+    exit 2
+fi
 
-# grain columns (1-based): 1 IID,2 individual_id,3 source_callset,4 ancestry,5 sex,6 pheno,
-#   7 dx_detailed,8 pheno_conflict,9 dx_conflict,10 sex_conflict,11 call_rate,12 dup_cluster_id,
-#   13..22 PC1..PC10
-DUAL="divco_hs|wgs_harm"
+[[ -f "$CONTRASTS_CSV" ]] || { echo "ERROR: no contrasts.csv at $CONTRASTS_CSV — run analysis_grain.py (§13) after step 6" >&2; exit 1; }
+[[ -d "$PHENO_SRC" ]]     || { echo "ERROR: no pheno dir at $PHENO_SRC — run analysis_grain.py (§13)" >&2; exit 1; }
+[[ -d "$COVAR_SRC" ]]     || { echo "ERROR: no covar dir at $COVAR_SRC — run analysis_grain.py (§13)" >&2; exit 1; }
 
-# ── age covariate: present only if the grain carries a recognizable age column ──
-AGE_IDX=$(head -1 "$GRAIN" | awk -F, '{for(i=1;i<=NF;i++){c=tolower($i); gsub(/^[ \t]+|[ \t]+$/,"",c);
-    if(c=="age"||c=="age_analysis"||c=="agedeath"||c=="age_death"||c=="age_baseline"||c=="age_cov"){print i; exit}}}')
-AGE_IDX=${AGE_IDX:-0}
-if [[ "$AGE_IDX" -gt 0 ]]; then
-    echo "age covariate: grain column ${AGE_IDX} — included"
+# ── read contrasts.csv BY HEADER NAME and emit a fixed-order tab stream ──
+# By name, not by position: the columns are §13's to change, and a positional read here is how a
+# reordered CSV becomes a mislabelled GWAS. Emitted tab-separated because no field can contain a
+# tab, while arms and tags are free to contain anything else.
+CROWS=${OUT_DIR}/.contrast_rows.tsv
+awk -F, -v ANCS=" ${ANCS} " -v WANT=" ${CONTRASTS} " '
+    NR==1 { for(i=1;i<=NF;i++){ k=$i; gsub(/^[ \t]+|[ \t]+$/,"",k); h[k]=i }
+            need="ancestry contrast case_arm ctrl_arm n_case n_ctrl case_pct_amppd ctrl_pct_amppd delta_amppd confound_tag viable_ge100"
+            n=split(need,w," ")
+            for(j=1;j<=n;j++) if(!(w[j] in h)){ printf "MISSING_COLUMN\t%s\n", w[j] > "/dev/stderr"; bad=1 }
+            if(bad) exit 3
+            next }
+    { if (index(ANCS, " " $h["ancestry"] " ") == 0) next
+      if (WANT !~ /^ *$/ && index(WANT, " " $h["contrast"] " ") == 0) next
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        $h["ancestry"], $h["contrast"], $h["case_arm"], $h["ctrl_arm"],
+        $h["n_case"], $h["n_ctrl"], $h["case_pct_amppd"], $h["ctrl_pct_amppd"],
+        $h["delta_amppd"], $h["confound_tag"], $h["viable_ge100"] }
+' "$CONTRASTS_CSV" > "$CROWS" || { echo "ERROR: $CONTRASTS_CSV is missing a required column (above)" >&2; exit 3; }
+
+NROWS=$(wc -l < "$CROWS")
+[[ "$NROWS" -gt 0 ]] || { echo "ERROR: no contrasts.csv rows matched ANCS='${ANCS}' CONTRASTS='${CONTRASTS}'" >&2; exit 1; }
+echo "contrasts.csv rows selected: ${NROWS}"
+
+# ── age: report what the covar files ACTUALLY carry, not what the grain might ──
+# §13 decides this. Reading it off the file means the log cannot claim an age term the covariates
+# do not contain.
+AGE_NOTE="absent"
+for A in $ANCS; do
+    if [[ -f "${COVAR_SRC}/covar_${A}.txt" ]]; then
+        head -1 "${COVAR_SRC}/covar_${A}.txt" | grep -qw "AGE" && AGE_NOTE="present" || AGE_NOTE="absent"
+        break
+    fi
+done
+if [[ "$AGE_NOTE" == "present" ]]; then
+    echo "age covariate: AGE column present in §13's covar files — included"
 else
-    echo "age covariate: NOT FOUND in grain header — running WITHOUT age."
-    echo "  Age is the dominant confounder for AD and PD. This is a known limitation, blocked on the"
-    echo "  phenotype track emitting a harmonized age (AMP-AD age-at-death vs AMP-PD age-at-baseline"
-    echo "  are not the same variable). Interpret accordingly."
+    echo "age covariate: no AGE column in §13's covar files — running WITHOUT age."
+    echo "  Age is the dominant confounder for AD and PD. Known limitation (HANDOFF issue 9),"
+    echo "  blocked on the phenotype track emitting a harmonized age: AMP-AD gives age-at-death,"
+    echo "  AMP-PD age-at-baseline, and they are not the same variable. Interpret accordingly."
 fi
 
 # summary header
@@ -199,69 +253,57 @@ echo "ancestry,contrast,case_arm,ctrl_arm,n_case,n_ctrl,case_pct_amppd,ctrl_pct_
 
 printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s\n" "ANC" "contrast" "n_case" "n_ctrl" "delta" "confound" "viable" "status" "lam_gc" "lam_1k" "diffmiss" "hits"
 
+# ── per-stratum staleness gate, once per ancestry ──
+# §13's covar must post-date the PCs it claims to carry. Step 6 writes cohort_<ANC>_pca.eigenvec in
+# the same job as cohort_<ANC>_qc, so an older covar means the grain was built on PCs that no longer
+# exist. The old script only WARNED about this in a header comment ("regenerate and re-copy, or this
+# silently runs on stale covariates"); a comment is not a check.
+declare -A ANC_OK=()
 for ANC in $ANCS; do
     QC=${QC_DIR}/cohort_${ANC}_qc
-    if [[ ! -f "${QC}.bed" ]]; then
-        echo "  skip ${ANC}: no ${QC}.bed"
-        continue
+    COVAR=${COVAR_SRC}/covar_${ANC}.txt
+    EIG=${QC_DIR}/cohort_${ANC}_pca.eigenvec
+    if [[ ! -f "${QC}.bed" ]]; then echo "  skip ${ANC}: no ${QC}.bed"; continue; fi
+    if [[ ! -f "$COVAR" ]];     then echo "  skip ${ANC}: no ${COVAR} (§13 wrote no covar for it)"; continue; fi
+    if [[ -f "$EIG" && "$COVAR" -ot "$EIG" ]]; then
+        echo "ERROR: ${COVAR} is OLDER than ${EIG}." >&2
+        echo "  Step 6 has run since the grain was built, so these covariates are the wrong PCs." >&2
+        echo "  Rerun analysis_grain.py, then resubmit. (Refusing rather than warning: this is the" >&2
+        echo "  failure mode that produced a GWAS on stale covariates before.)" >&2
+        exit 4
     fi
+    ANC_OK[$ANC]=1
+done
+[[ ${#ANC_OK[@]} -gt 0 ]] || { echo "ERROR: no stratum had both a fileset and a §13 covar file" >&2; exit 1; }
 
-    # ── IID->FID map from the genotype fileset (source of truth for the FID plink matches on) ──
-    # plink2 defaults a pheno/covar file's missing FID to "0" and matches on FID+IID, so the AMP-PD
-    # (wb_dwgs) samples — which carry a non-zero FID — need their real FID or they never match.
-    FAMMAP=${COVAR_DIR}/fid_${ANC}.map
-    awk '{print $2"\t"$1}' "${QC}.fam" > "$FAMMAP"      # IID<tab>FID (tab-delim, no commas)
+while IFS=$'\t' read -r ANC TAG CASE_ARM CTRL_ARM NCASE NCTRL CASE_PCT CTRL_PCT DELTA TAGC VIABLE_N; do
+        [[ -n "${ANC_OK[$ANC]:-}" ]] || continue
+        QC=${QC_DIR}/cohort_${ANC}_qc
+        COVAR=${COVAR_SRC}/covar_${ANC}.txt
+        PHENO=${PHENO_SRC}/pheno_${ANC}_${TAG}.txt
 
-    # ── covar file for this ancestry (built once): #FID IID SEX PC1..PC10 ──
-    COVAR=${COVAR_DIR}/covar_${ANC}.txt
-    awk -F, -v A="$ANC" -v AGEI="$AGE_IDX" '
-        NR==FNR { split($1,m,"\t"); fid[m[1]]=m[2]; next }   # map file (first arg): IID -> FID
-        FNR==1 { h="#FID\tIID\tSEX"; if(AGEI>0) h=h "\tAGE";
-                 for(p=1;p<=10;p++) h=h "\tPC" p; print h; next }
-        $4==A {
-            f=(($1 in fid)?fid[$1]:"0"); sex=($5==""?"NA":$5);
-            line=f "\t" $1 "\t" sex;
-            if(AGEI>0){ a=$AGEI; line=line "\t" (a==""?"NA":a) }
-            for(i=13;i<=22;i++){ v=($i==""?"NA":$i); line=line "\t" v }
-            print line
-        }' "$FAMMAP" "$GRAIN" > "$COVAR"
+        # Arm sizes, cohort composition and the confound tag all come from contrasts.csv — §13
+        # computed them off the same rows it wrote the pheno file from, so re-deriving them here
+        # could only introduce disagreement.
+        VIABLE="no"; [[ "$VIABLE_N" == "1" ]] && VIABLE="yes"
 
-    for C in $CONTRASTS; do
-        CASE_ARM=${C%%:*}
-        CTRL_ARM=${C##*:}
-        # Optional per-arm source restriction "<dx>@amppd" | "<dx>@ampad" (amppd=wb_dwgs, ampad=rest).
-        # Enables within-cohort scans and the control-vs-control batch-artifact scan; bare dx = any source.
-        CASE_DX=${CASE_ARM%%@*}; CASE_SRC=${CASE_ARM#*@}; [ "$CASE_SRC" = "$CASE_ARM" ] && CASE_SRC=""
-        CTRL_DX=${CTRL_ARM%%@*}; CTRL_SRC=${CTRL_ARM#*@}; [ "$CTRL_SRC" = "$CTRL_ARM" ] && CTRL_SRC=""
-        TAG=$(printf '%s_vs_%s' "$CASE_ARM" "$CTRL_ARM" | tr '@' '_')   # filesystem-safe (@ -> _)
-        PHENO=${PHENO_DIR}/pheno_${ANC}_${TAG}.txt
+        if [[ ! -f "$PHENO" ]]; then
+            printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s\n" \
+                "$ANC" "$TAG" "$NCASE" "$NCTRL" "$DELTA" "$TAGC" "$VIABLE" "no_pheno_file" "NA" "NA" "NA" "NA"
+            echo "${ANC},${TAG},${CASE_ARM},${CTRL_ARM},${NCASE},${NCTRL},${CASE_PCT},${CTRL_PCT},${DELTA},${TAGC},${VIABLE},no_pheno_file,NA,NA,NA,NA,NA," >> "$SUMMARY"
+            continue
+        fi
 
-        # ── build pheno (#FID IID; case=2, ctrl=1) + count arms + per-arm AMP-PD share, one awk pass ──
-        read -r NCASE NCTRL CASE_PD CTRL_PD < <(
-            awk -F, -v A="$ANC" -v CDX="$CASE_DX" -v CSRC="$CASE_SRC" -v KDX="$CTRL_DX" -v KSRC="$CTRL_SRC" \
-                    -v DUAL="$DUAL" -v EXD="$EXCLUDE_DUAL" -v PF="$PHENO" '
-                function srcok(want, ispd){ return (want=="" || (want=="amppd"&&ispd) || (want=="ampad"&&!ispd)) }
-                NR==FNR { split($1,m,"\t"); fid[m[1]]=m[2]; next }   # map file (first arg): IID -> FID
-                FNR==1 { print "#FID\tIID\tpheno" > PF; next }
-                $4==A {
-                    if (EXD==1 && $3==DUAL) next
-                    ispd = ($3=="wb_dwgs") ? 1 : 0
-                    f=(($1 in fid)?fid[$1]:"0")
-                    if ($7==CDX && srcok(CSRC,ispd)){ ncase++; case_pd+=ispd; print f"\t"$1"\t"2 > PF }
-                    else if ($7==KDX && srcok(KSRC,ispd)){ nctrl++; ctrl_pd+=ispd; print f"\t"$1"\t"1 > PF }
-                }
-                END{ printf "%d %d %d %d\n", ncase, nctrl, case_pd, ctrl_pd }
-            ' "$FAMMAP" "$GRAIN"
-        )
-        NCASE=${NCASE:-0}; NCTRL=${NCTRL:-0}; CASE_PD=${CASE_PD:-0}; CTRL_PD=${CTRL_PD:-0}
-
-        # ── cohort-composition + confound tag (data-driven) ──
-        CASE_PCT=$(awk -v n="$NCASE" -v p="$CASE_PD" 'BEGIN{printf (n>0)?"%.1f":"NA", (n>0)?100*p/n:0}')
-        CTRL_PCT=$(awk -v n="$NCTRL" -v p="$CTRL_PD" 'BEGIN{printf (n>0)?"%.1f":"NA", (n>0)?100*p/n:0}')
-        DELTA=$(awk -v a="$CASE_PCT" -v b="$CTRL_PCT" 'BEGIN{ if(a=="NA"||b=="NA"){print "NA"} else {d=a-b; print (d<0?-d:d)} }')
-        TAGC=$(awk -v d="$DELTA" 'BEGIN{ if(d=="NA"){print "NA"} else if(d<=20){print "within_cohort"} else if(d>=70){print "cross_cohort"} else {print "partial"} }')
-
-        VIABLE="no"; [[ "$NCASE" -ge 100 && "$NCTRL" -ge 100 ]] && VIABLE="yes"
+        # ── the pheno file must describe THIS fileset ──
+        # Catches a pheno directory from a different step-6 generation, which mtime alone can miss:
+        # a covar can be newer than the eigenvec and still list samples this .fam does not contain.
+        NOTINFAM=$(awk 'NR==FNR{f[$2]=1;next} FNR>1 && $2!="" && !($2 in f){n++} END{print n+0}' \
+                       "${QC}.fam" "$PHENO")
+        if [[ "$NOTINFAM" -gt 0 ]]; then
+            echo "ERROR: ${PHENO} lists ${NOTINFAM} IIDs absent from ${QC}.fam." >&2
+            echo "  That pheno file was built against a different sample set. Rerun analysis_grain.py." >&2
+            exit 5
+        fi
 
         # ── run gate: both arms >= MIN_ARM ──
         SUMFILE=""; LAM_GC="NA"; LAM_1K="NA"; NDIFF="NA"; NBETA="NA"; NHIT="NA"
@@ -353,8 +395,7 @@ for ANC in $ANCS; do
         printf "%-5s %-16s %7s %7s %8s %-13s %-7s %-12s %8s %8s %9s %6s\n" \
             "$ANC" "$TAG" "$NCASE" "$NCTRL" "$DELTA" "$TAGC" "$VIABLE" "$RAN" "$LAM_GC" "$LAM_1K" "$NDIFF" "$NHIT"
         echo "${ANC},${TAG},${CASE_ARM},${CTRL_ARM},${NCASE},${NCTRL},${CASE_PCT},${CTRL_PCT},${DELTA},${TAGC},${VIABLE},${RAN},${LAM_GC},${LAM_1K},${NDIFF},${NBETA},${NHIT},${SUMFILE##*/}" >> "$SUMMARY"
-    done
-done
+done < "$CROWS"
 
 echo "=========================================="
 echo "GWAS complete: $(date)"

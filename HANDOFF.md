@@ -268,9 +268,11 @@ blocks anything.
 | **remove the sentinel entirely** | **done + RUN 2026-08-20** — both call sites + the `gene_annot` API; no sentinel output in `step6_summary.txt` |
 | step 6 rerun on the gated list | **done 2026-08-20** — 4,187-variant list applied; stage D/E regenerated |
 | grain on the gated PCs | **done 2026-08-20** — 12,495 × 22, 17 viable, unchanged shape |
-| eta² re-measurement on 4,187 | **NEXT ACTION** — `review/plot_af_filter_effect.py`; the 0.757→0.036 figure below is still the 4,415 measurement |
+| eta² re-measurement on 4,187 | **done 2026-08-20** — EUR 0.757 → 0.036 (**95.3%**), i.e. the gate cost the filter nothing |
+| known issue 1 (pheno/covar) | **RESOLVED 2026-08-20** — step 7 reads §13's files; awk rebuild deleted. Not yet run |
+| 7 GWAS | **NEXT ACTION** — rsync `scripts/` + `config.sh`, then `./submit.sh scripts/07_gwas.sh` |
 | MHC flag-rate measurement | **not a gate — deferred to write-up 2026-08-20.** Per-arm tables already settled subtract-vs-annotate; the rate is a methods number |
-| 7 GWAS | after the HWE-gate rerun |
+| 8 ctrl-vs-ctrl + review plots | after step 7 |
 
 **Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
 the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage
@@ -288,16 +290,26 @@ would move for a reason that has nothing to do with genotypes; stop there.
 the four-callset cohort: AJ PC1 **0.984**, EUR PC2 **0.757**. Removing BR changes neither
 (0.984 / 0.758), so this is real `wgs_harm`↔`wb_dwgs` structure. Applying the 4,415-variant list:
 
-| stratum | max eta² unfiltered | max eta² filtered | reduction |
-|---|---|---|---|
-| EUR | 0.757 (PC2) | **0.036** (PC6) | **95.2%** |
-| AJ | 0.984 (PC1) | **0.962** (PC1) | 2.2% |
+**Measured on the LIVE 4,187-variant gated list, 2026-08-20** (`results/pca/af_filter_effect_gated4187.csv`):
 
-⚠️ **These two rows are the 4,415-variant measurement and the live list is now 4,187.** The 228
-withheld variants were HWE-only additions — general variant QC, not cohort-artifact removal — so
-EUR should barely move, but that is a *prediction*, and this table is cited as first-party measured
-evidence in three places. Re-run `review/plot_af_filter_effect.py` against the manifests step 6
-wrote this run and replace these numbers before quoting them again.
+| stratum | n | max eta² unfiltered | max eta² filtered | reduction |
+|---|---|---|---|---|
+| EUR | 10,135 | 0.757 (PC2) | **0.036** (PC6) | **95.3%** |
+| AJ | 1,518 | 0.984 (PC1) | **0.962** (PC1) | 2.2% |
+| AAC | 226 | 0.877 (PC2) | 0.876 (PC2) | 0.1% |
+| AFR | 191 | 0.708 (PC1) | 0.713 (PC1) | **−0.6%** |
+| CAH | 106 | 0.309 (PC4) | 0.199 (PC4) | 35.6% |
+| AMR | 185 | 0.203 (PC8) | 0.170 (PC8) | 16.0% |
+
+**The HWE gate did not cost the filter anything.** On the ungated 4,415 list EUR was 0.036 / 95.2%;
+on the gated 4,187 it is 0.036 / 95.3%, and AJ is identical to three decimals. That is what the
+"the 228 withheld are general variant QC, not cohort-artifact removal" reading predicted, and it is
+now measured rather than argued. **The 95% claim is safe to quote against the live list.**
+
+AFR's reduction is slightly *negative*. Not a regression: AAC and AFR eta² is one BR sample each at
+39.7σ / 19.6σ, not callset structure (see below), so these two rows are dominated by a single point
+and move by noise. No AAC/AFR/CAH/AMR contrast is `viable_ge100`, so none of those four PCs reaches
+a GWAS — the 17 viable contrasts are AJ (3) and EUR (14).
 
 **EUR: solved.** 0.058% of its variants carried essentially all the callset structure in its PCs.
 
@@ -377,9 +389,29 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
 
 ## Known issues
 
-1. **Two implementations of pheno/covar.** `analysis_grain.py` §13 writes
-   `clinical_core_out/{pheno,covar}/`, but `07_gwas.sh` does not read them — it rebuilds both from
-   `$GRAIN` in awk. The awk version is what actually runs. Pick one.
+1. **~~Two implementations of pheno/covar~~ — RESOLVED 2026-08-20. §13 is the only one.**
+   `07_gwas.sh` now reads `clinical_core_out/{pheno,covar}/` and `contrasts.csv`; its awk rebuild of
+   both files is deleted. §13's docstring already claimed step 7 read them ("the definition exists
+   once and cannot drift between the two") — the claim is now true rather than aspirational.
+   `config.sh` exports `PHENO_SRC` / `COVAR_SRC` / `CONTRASTS_CSV`.
+
+   Three behaviour changes that follow, none of them accidental:
+   - **`MIN_ARM` can only raise the floor.** §13 writes no file below 20 per arm, so `MIN_ARM=0` no
+     longer means "force literally all". Lower it in §13 if that is ever wanted.
+   - **`EXCLUDE_DUAL` is gone from step 7** and now lives only in §13, which is what §13 argued for:
+     a sensitivity run should be a recorded artifact, not a flag remembered at GWAS time. Step 7
+     **refuses** the old `--export=EXCLUDE_DUAL=1` rather than ignoring it. Run it by setting
+     `EXCLUDE_DUAL=True` in `analysis_grain.py`, rerunning to a separate `CLINICAL_OUT`, then
+     pointing `PHENO_SRC`/`COVAR_SRC`/`CONTRASTS_CSV` at that generation.
+   - **The age decision moved to §13**, which emits an `AGE` column or does not. Step 7 reports what
+     the covar file actually contains instead of sniffing the grain header (issue 9).
+
+   **Two stale-generation guards replaced a header comment.** The old script only warned, in a
+   comment, that re-running step 6 invalidates the grain and "this silently runs on stale
+   covariates". Now: each `covar_<ANC>.txt` must be newer than its `cohort_<ANC>_pca.eigenvec`
+   (exit 4), and every IID in a pheno file must appear in the `.fam` being tested (exit 5) — which
+   catches a mismatched generation that mtime alone would miss. `contrasts.csv` is read **by header
+   name**, so a reordered column aborts with the missing name instead of mislabelling a contrast.
 
 2. **Two implementations of the ctrl-vs-ctrl artifact filter — now both in the repo.**
    `08_ctrl_ctrl_filter.{py,sh}` has been promoted out of the cluster's `scripts_archive/` into

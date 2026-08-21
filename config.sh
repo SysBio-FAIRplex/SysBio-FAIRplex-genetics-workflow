@@ -92,10 +92,20 @@ ANNOT="${ANNOT:-${CLINICAL_OUT}/sample_annot.csv}"
 #   SEX_FILE="$(sex_file wgs_harm)"
 sex_file() { echo "${CLINICAL_OUT}/${1}_update_sex.txt"; }
 
-# NOTE: §13 also writes clinical_core_out/{pheno,covar}/, but step 7 does NOT read them —
-# it rebuilds both from ${GRAIN} in awk, and defines its own PHENO_DIR/COVAR_DIR under its
-# output dir. Two implementations of the same files; the awk one is what actually runs.
-# Deliberately not named here so nothing shadows step 7's. See README "known duplication".
+# §13's phenotype/covariate/contrast files — THE inputs to step 7 as of 2026-08-20.
+#
+# Step 7 used to rebuild both in awk from ${GRAIN} and ignore these, which was two
+# implementations of "who is a case" and is the duplication known issue 1 tracked. §13 is now
+# the sole definition and step 7 reads it, so an arm cannot be defined differently in two
+# places. §13's own docstring already claimed this; the claim is now true.
+#
+# Overridable as a set so a sensitivity run points at an alternative generation — that is how
+# EXCLUDE_DUAL works now: set it in analysis_grain.py, rerun to a different CLINICAL_OUT, and
+# point step 7 here. §13 argues for that deliberately: the sensitivity variant becomes a
+# recorded artifact rather than a flag someone has to remember at GWAS time.
+PHENO_SRC="${PHENO_SRC:-${CLINICAL_OUT}/pheno}"
+COVAR_SRC="${COVAR_SRC:-${CLINICAL_OUT}/covar}"
+CONTRASTS_CSV="${CONTRASTS_CSV:-${CLINICAL_OUT}/contrasts.csv}"
 
 # Written by the genotype side (step 6 stage E), read by the review tooling. NOT read by §12,
 # which globs the eigenvecs directly — see the docstring in scripts/ancestry_qc_manifest.py.
