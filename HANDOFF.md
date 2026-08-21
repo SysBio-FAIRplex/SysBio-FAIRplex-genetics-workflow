@@ -187,12 +187,23 @@ deleting a variant that is part of a known locus?") it labels flank hits with th
 240–435 kb away. Same for SNCA (intergenic), GBA1 (`DAP3`), APOE (`ZNF285`/`ZNF229`). Verified with
 `python3 scripts/gene_annot.py --at <pos>`.
 
-### Then: the one aggregate question worth keeping
+### The MHC aggregate question — NOT a gate on step 7. Decided 2026-08-20.
 
-Dropping the tripwire does **not** dispose of "is this filter disproportionately hitting known
-loci?" — that is a legitimate question, and the 279-hit dump did surface something: **245 of the 279
-were MHC** (`HLA-DRB1±500kb` 213, `HLA-B±500kb` 32), roughly chr6:30.8–33.1 Mb. Ask it as a rate,
-with the correct denominator:
+Dropping the tripwire does not dispose of "is this filter disproportionately hitting known loci?",
+and the 279-hit dump did surface something: **245 of the 279 were MHC** (`HLA-DRB1±500kb` 213,
+`HLA-B±500kb` 32), roughly chr6:30.8–33.1 Mb.
+
+**But the decision that question was meant to inform is already settled by the per-arm tables**
+(`PROJECT_LOG.md` 2026-08-20, "the per-arm tables settle the liftover verdict per-variant"). Those
+MHC flags have a per-variant technical mechanism: the two natively-called callsets agree near 0
+while the lifted one does not — `chr6:32474706` `divco_hs` 0.008 / `wb_dwgs` 0.005 vs `wgs_harm`
+0.207–0.213; `chr6:32588203` 0.000 / 0.000 vs 0.088–0.107. That is exactly the pattern that
+licences 6a to delete (disease held constant, so a between-callset gap is technical). "Annotate the
+MHC rather than subtract it" is therefore argued *against* on per-variant evidence, not left open.
+
+So the flag rate is a **methods-reporting number**, not a decision input, and it does not gate step
+7. Run it when writing up, to state the magnitude — "the filter removes X% of MHC variants against
+Y% genome-wide" — not before:
 
 ```bash
 cd /data/CARDPB2/sysbio/wgs && source config.sh
@@ -209,12 +220,13 @@ print(f'genome : {fa:,}/{ta:,} = {100*fa/ta:.4f}%')
 print(f'enrichment: {(fm/tm)/(fa/ta):.1f}x')"
 ```
 
-**Why this matters and is not academic:** `06_ancestry_qc.sh`'s own header argues the MHC is a real
-AD locus and that masking it from *association* would delete signals we most expect to see — which
-is why the high-LD BED is applied to the PCA input only. This filter reaches the association set.
-`HLA-DRB1/DRB5` is one of this study's two real findings. If the enrichment is large, decide
-deliberately whether the MHC should be annotated rather than subtracted there (the step 8 pattern),
-rather than letting the default stand.
+**Why it is still worth reporting, even though it decides nothing:** `06_ancestry_qc.sh`'s own
+header argues the MHC is a real AD locus and that masking it from *association* would delete
+signals we most expect to see — which is why the high-LD BED is applied to the PCA input only. This
+filter reaches the association set, and `HLA-DRB1/DRB5` is one of this study's two real findings.
+So the magnitude of what was removed from that region belongs in the methods as a stated limitation.
+What it is *not* is an open question about whether to annotate instead of subtract there — the
+per-arm evidence above answers that, and the answer is subtract.
 
 ---
 
@@ -248,8 +260,8 @@ blocks anything.
 | frequency test → `plink --assoc` | done + **VERIFIED IDENTICAL** 2026-08-20, job `af_swap_test2` |
 | HWE excess-over-chance gate | written, default ON, **NOT YET RUN** — see known issue 7 |
 | **remove the sentinel entirely** | **NEXT ACTION — see below. Nothing else should run first.** |
-| MHC flag-rate measurement | open — one command, see below |
-| 7 GWAS | after those |
+| MHC flag-rate measurement | **not a gate — deferred to write-up 2026-08-20.** Per-arm tables already settled subtract-vs-annotate; the rate is a methods number |
+| 7 GWAS | after the sentinel removal and the HWE-gate rerun |
 
 **Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
 the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage

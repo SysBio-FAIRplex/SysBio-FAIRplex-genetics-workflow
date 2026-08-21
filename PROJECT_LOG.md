@@ -140,6 +140,34 @@ three callsets were sex-updated from `<dataset>/metadata/`, not from the correct
 
 ---
 
+## 2026-08-20 (night) — the MHC flag-rate measurement is OFF the critical path (decision)
+
+**Changed.** Dropped the MHC flag-rate measurement as a prerequisite for step 7. It was item 2 of 5
+in the previous entry's "Next, in order" and is now a write-up task. `HANDOFF.md`'s status row and
+its "one aggregate question worth keeping" section were reframed to match.
+
+**Why — the decision it was meant to inform was already made, by the entry directly below this
+one.** The measurement existed to answer "if the enrichment is large, should the MHC be annotated
+rather than subtracted (the step 8 pattern)?" But that same entry's per-arm finding settles it
+per-variant: the two natively-called callsets agree near 0 while the lifted one does not —
+`chr6:32474706` `divco_hs` 0.008 / `wb_dwgs` 0.005 vs `wgs_harm` 0.207–0.213; `chr6:32588203`
+0.000 / 0.000 vs 0.088–0.107. A both-native pair agreeing against the lifted callset is precisely
+the licence condition for 6a to delete: disease is held constant inside the cell, so the gap is
+technical. An enrichment ratio cannot overturn a per-variant mechanism, so the number could not
+have changed the action — which is the definition of not a gate.
+
+**What is NOT being claimed.** The MHC concentration is still real and still worth stating: 245 of
+the 279 sentinel hits were MHC, this filter reaches the association set (unlike the high-LD BED,
+which is PCA-input-only), and `HLA-DRB1/DRB5` is one of this study's two real findings. So the
+magnitude belongs in the methods as a limitation. The command survives in `HANDOFF.md` for that
+purpose. What is retired is the idea that it blocks anything.
+
+**Next, in order — revised.** 1. Remove the sentinel from `af_concordance_build.py`, deciding the
+`08_ctrl_ctrl_filter.py` sub-question first. 2. Run step 6 with the HWE gate on; read the withheld
+count and the new list size. 3. `analysis_grain.py`. 4. Step 7. (The MHC rate moves to write-up.)
+
+---
+
 ## 2026-08-20 (evening) — the --assoc swap is VERIFIED. Decision: delete the sentinel entirely.
 
 **Did.** Ran the swapped frequency test against the pre-change list. Fixed a precision bug it
