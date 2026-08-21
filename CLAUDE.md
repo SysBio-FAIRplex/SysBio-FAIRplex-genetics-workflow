@@ -29,7 +29,11 @@ the grep work next time.
 its docstring measured exactly how wrong that table was (37% of CR1, 52% of LRRK2, no HLA gene at
 all). It was then never imported. Both copies of the bad table stayed in place and kept running,
 so the tripwire under-reported for weeks with the fix sitting in the same directory. Wired in
-2026-08-20.
+2026-08-20 — and then, once wired, its first correct run showed the whole check was unsound and
+**the sentinel was deleted outright the same day** (both call sites, plus the `sentinel_*` API in
+`gene_annot.py`). Worth keeping in mind when applying this rule: wiring the replacement is what
+made the concept testable, and the test killed it. `gene_annot.py` survives as a read-only CLI with
+no pipeline callers.
 
 So: **write the replacement, wire every call site, and delete the original in the same change.**
 Dead-code fixes read as solved and are not. If a call site cannot be converted yet, say so in
@@ -47,7 +51,14 @@ Several bugs here exited 0 and looked like clean results: the CAH ancestry bug s
 accuracy while corrupting every sample; a stale exclusion list was applied silently; a "file count
 matched" check passed while two files were missing. When a check cannot run, it must say so
 loudly — never let "none found" be printable when the thing that would have found it was absent.
-Both sentinel call sites now print a banner instead.
+
+The sentinel tripwire used to print a banner for exactly this reason, and on 2026-08-20 it was
+deleted instead — which is the stronger form of the same rule. Its refFlat-failure banner covered
+the case where the check *could not run*, but nothing covered the case where the check ran fine and
+its 9-gene scope was too narrow to mean anything: "no known AD/PD locus among the flagged" was
+printable off an uncited list, and read as reassurance. **A check whose negative result is not
+evidence should be deleted, not annotated with a caveat** — a warning nobody can act on is the same
+failure wearing a different label.
 
 ## 4. Verify by name, not by position
 
@@ -81,9 +92,17 @@ Only step 6a (`af_concordance_build.py`) may delete, and only because disease is
 inside each (stratum × dx) cell, so a between-callset frequency gap has to be technical. Step 8
 may not delete — its control arms are differentially screened across programs, so APOE is
 *expected* to reach significance there and subtracting would remove the study's strongest true
-locus. It annotates instead. The sentinel tripwire is the check on 6a's licence; a hit means stop
-and resolve it against the per-cell `.afreq`/`.snplist` intermediates.
+locus. It annotates instead.
+
+**There is no automated check on 6a's licence, deliberately — as of 2026-08-20 you are it.** A
+sentinel-loci tripwire held that role and was deleted: it gated nothing (stage C applies the list
+later in the same job), and its 9-gene scope made both its positive and its negative results
+uninformative. What replaces it is reading stage B's log — the BY CALLSET PAIR table and the
+per-cell HWE ratio table — and resolving anything that looks wrong against the per-cell
+`.afreq`/`.snplist` intermediates in `af_concordance/`, indexing by **header name** (rule 4: column
+5 of an `.afreq` is `PROVISIONAL_REF?`). Call rate is usually the tell, not frequency: CR1 was
+resolved by `divco_hs` calling it in 156 of 242 alleles while the same samples were 242/242 at the
+LRRK2 site. To name the gene a variant sits in, use `python3 scripts/gene_annot.py --at <chr:pos>`.
 
 Note the timing: step 6 applies the list at stage C, later in the same job that builds it at stage
-B. The tripwire therefore reports rather than gates — resolve hits before step 7 reads the
-association set.
+B. So nothing about stage B can gate — resolve anomalies before step 7 reads the association set.

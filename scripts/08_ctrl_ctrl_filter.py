@@ -16,23 +16,33 @@ in the control-vs-control scan for an entirely real reason. Subtracting it destr
 delete the strongest true locus in the study, which is very likely why the demo reports APOE from
 its unfiltered sumstats and keeps the filtered set as a separate file.
 
-So this writes `.ccfilt.tsv` alongside the primary and never modifies it, adds a CTRL_P column to a
-`.ccannot.tsv` so any hit can be judged individually, and reports explicitly whether known AD/PD
-loci are among the flagged — a hit there is the screening asymmetry showing up, not an artifact.
+So this writes `.ccfilt.tsv` alongside the primary and never modifies it, and adds a CTRL_P column
+to a `.ccannot.tsv` so any hit can be judged individually. `.ccannot.tsv` is the artifact to read:
+every flagged variant is there with its control-vs-control P, which is what lets a reader decide
+per-variant whether a hit is the screening asymmetry or a real batch effect.
+
+NO SENTINEL-LOCUS REPORT HERE, DELIBERATELY — removed 2026-08-20 together with 6a's. It listed
+which flagged variants fell in a hand-picked 9-gene set, and the fatal problem was the NEGATIVE it
+could print: "no known AD/PD locus among the flagged", off a list with no citation behind it, reads
+as reassurance that the flags are safe to subtract. With 9 genes that statement is close to
+meaningless — a flagged variant sitting on a real locus outside the set produced exactly the same
+output. That is the failure this file's own history warns about (it once carried a hardcoded window
+table covering 37% of CR1 and naming no HLA gene at all, so it could report "no known locus
+flagged" while sitting on HLA-DRB1); resolving the coordinates from refFlat narrowed that hole
+without closing it. The ±500 kb flanks also mislabel: none of the 21 variants reported under
+"LRRK2±500kb" on 2026-08-20 were in LRRK2 — they were in SLC2A13 and C12orf40, 240-435 kb away.
+
+Nothing is lost, because the warning that block existed to deliver does not depend on a gene list
+and is printed unconditionally below: the control arms differ by disease SCREENING, not only by
+batch, so `.ccfilt.tsv` is a sensitivity analysis and never the primary result. To name the gene a
+specific hit sits in, use the gene_annot.py CLI, which is unarbitrary and correctly labelled:
+    python3 scripts/gene_annot.py --at chr19:44908684
 
 GUARDRAIL: reads summary statistics only — no genotypes, no sample IDs. Prints aggregate counts.
 """
 from pathlib import Path
 import argparse
 import sys
-
-# Sentinel coordinates come from gene_annot.py (full refFlat transcript extents ±SENTINEL_FLANK),
-# not from a table here. This file used to carry its own verbatim copy of a hardcoded
-# [(name, chrom, pos, window)] list AND its own parse_id/sentinel_hits — three duplications of the
-# same thing across two scripts. The copied windows covered 37% of CR1 and 52% of LRRK2 and named
-# no HLA gene, so this script could report "no known locus flagged" while sitting on HLA-DRB1, one
-# of the study's two real findings. Same set, same resolver, both scripts.
-from gene_annot import sentinel_hits, SENTINEL_FLANK
 
 CTRL_TAG = "control_amppd_vs_control_ampad"
 
@@ -89,25 +99,12 @@ def main():
         print("  There is no true signal in this contrast, so an excess over chance is residual")
         print("  cohort artifact that survived step 6a. Near chance = 6a did its job.")
 
-        try:
-            sh = sentinel_hits(flagged)
-        except (FileNotFoundError, ValueError) as e:
-            # Loud, not silent: "no known locus flagged" must never be printable when the
-            # annotation that would have found one could not be read.
-            print(f"\n  !! SENTINEL CHECK DID NOT RUN ({e}) — the flagged set was NOT checked")
-            print("  !! against any known AD/PD locus. Fix ref/refFlat.txt before reading below.")
-            sh = None
-        if sh:
-            print(f"\n  KNOWN LOCI among the flagged (refFlat extents ±{SENTINEL_FLANK//1000}kb)"
-                  " — read before filtering on them:")
-            for name, near in sh:
-                print(f"    {name:22} {len(near)}: {', '.join(sorted(near)[:4])}")
-            print("    AMP-AD controls are screened cognitively normal, AMP-PD controls are")
-            print("    screened for PD only — so AD risk alleles are genuinely depleted in the")
-            print("    AMP-AD arm. A hit here is that asymmetry, NOT an artifact. Filtering it")
-            print("    out would delete real signal. This is why .ccfilt.tsv is a separate file.")
-        elif sh is not None:
-            print("\n  no known AD/PD locus among the flagged")
+        # Unconditional, and it replaces the deleted per-locus report: this holds for EVERY flagged
+        # variant, not only for the ones a hand-picked gene list happened to name.
+        print("  AMP-AD controls are screened cognitively normal, AMP-PD controls are screened for")
+        print("  PD only — so AD risk alleles are genuinely depleted in the AMP-AD arm and a real")
+        print("  AD locus is EXPECTED here. Judge flagged variants individually in .ccannot.tsv;")
+        print("  `gene_annot.py --at <chr:pos>` names the gene a given hit sits in.")
 
         # ── annotate + filter every other contrast in this ancestry ──
         others = [p for p in sorted(gd.glob(f"gwas_{anc}_*.filtered.tsv"))

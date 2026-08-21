@@ -34,8 +34,10 @@ position, not by name**. Fixed with `--sort-vars` in step 1. See the entries bel
 **Scope of the ORDER bug is BR-DSNWGS only — measured, not assumed.** All four callsets were
 checked with `scripts/diag_order.py`: `wgs_harm`, `divco_hs` and `wb_dwgs` are numeric with
 **0 rank drops**, so their ancestry labels and the merge are unaffected and need no redoing.
-**This is not the same question as whether the grain is correct** — `analysis_grain.csv`'s
-BR-DSNWGS rows are wrong for a separate reason and are item 1 below.
+**This was not the same question as whether the grain is correct** — the grain's BR-DSNWGS rows were
+wrong for a separate reason. **Both are now closed:** the grain was regenerated 2026-08-20 on step
+6's filtered PCs (12,495 rows × 22 cols; 95 retained BR samples as 76 EUR / 13 AJ / 3 AMR / 1 AAC /
+1 AFR / 1 CAH).
 
 **Steps 1–5 are DONE for all four callsets.** `cohort_merged` is 172,497,055 variants × 13,334
 samples; step 5 retains **12,495** (839 excluded: 499 relative, 319 duplicate, 21 sex).
@@ -94,13 +96,9 @@ compared as printed.
 67 EUR / 19 AFR.** The correct 12,495-row grain exists only on the cluster, which is right
 (`clinical_core.py` must run there). But `clinical_core_out/` sits in the project root beside the
 code, so **any `rsync` of the project laptop→cluster overwrites the good grain with the bad one**
-unless `clinical_core_out/` is excluded. Fourth face of the stale-artifact bug.
-
-**The grain in this repo (laptop) is the WRONG one — 11,918 rows, dated 2026-08-10, BR-DSNWGS as
-67 EUR / 19 AFR.** The correct 12,495-row grain exists only on the cluster, which is right
-(`clinical_core.py` must run there). But `clinical_core_out/` sits in the project root beside the
-code, so **any `rsync` of the project laptop→cluster overwrites the good grain with the bad one**
-unless `clinical_core_out/` is excluded. Fourth face of the stale-artifact bug.
+unless `clinical_core_out/` is excluded. Fourth face of the stale-artifact bug. (This paragraph
+appeared twice here verbatim; the duplicate was removed 2026-08-20. Still true as written — it is
+about the laptop copy, which the 2026-08-20 regeneration on the cluster did not touch.)
 
 **Duplicates are settled, and the "~748" is sourced.** It was `clinical_core.py` §8's
 multi-cohort ENROLLMENT count (846 donors in >1 cohort, 748 of them DivCo↔ROSMAP) — never a
@@ -118,9 +116,10 @@ and tightening it would cost half the variants for all 13,334 samples. BR sits e
 AMP-PD side of the primary contrast; step 7's differential-missingness filter is the mitigation.
 
 **Then, in order:**
-1. **Regenerate the BR-DSNWGS rows in `analysis_grain.csv`.** The stored labels (19 AFR /
-   67 EUR over 86 rows) are contradicted by the correct run — see the entry below. Those PCs
-   and labels are wrong, not merely stale.
+1. ~~**Regenerate the BR-DSNWGS rows in `analysis_grain.csv`.**~~ **DONE 2026-08-20.** The stored
+   labels (19 AFR / 67 EUR over 86 rows) were contradicted by the correct run — wrong, not merely
+   stale. The grain was rebuilt on step 6's filtered PCs: 12,495 rows × 22 cols, 17 viable
+   contrasts, BR's 95 retained samples as 76 EUR / 13 AJ / 3 AMR / 1 AAC / 1 AFR / 1 CAH.
 2. Add the order check as a pre-flight gate in `01_genotools.sh` — deferred until a run
    succeeded from the reverted baseline, which has now happened. This bug exited 0, wrote its
    output, and scored 0.97 model accuracy while corrupting every sample; a gate is what stops
@@ -137,6 +136,126 @@ AMP-PD side of the primary contrast; step 7's differential-missingness filter is
 three callsets were sex-updated from `<dataset>/metadata/`, not from the corrected
 `clinical_core_out/`); and the BR-DSNWGS PCs and ancestry labels already sitting in
 `analysis_grain.csv` for a callset that had never cleared step 1.
+
+---
+
+## 2026-08-20 (night, later) — HWE gate RUN. List 4,415 → 4,187. Both predictions held.
+
+**Did.** rsynced the sentinel removal, reran step 6 with `HWE_REQUIRE_EXCESS` at its default (1),
+reran `analysis_grain.py`. Full job, not just stage B — stage D's PCs and stage E's manifest both
+regenerated (21:37).
+
+**Found — the gate behaves exactly as designed, and the arithmetic closes.** The list is **4,187**,
+down 228 from 4,415. `AJ`/`wb_dwgs` (0.24×) and `EUR`/`wb_dwgs` (0.35×) both print `WITHHELD`;
+`EUR`/`wgs_harm` (4.5×) voted. Provenance records `require-excess : True`. HANDOFF predicted those
+two cells "still contributed up to 229 of the 4,415" — the observed 228 means 228 were unique to
+them and exactly 1 was independently flagged by another channel. Both settled predictions held:
+
+| prediction | outcome |
+|---|---|
+| `chr12:40227079:C:T` (LRRK2) un-excluded | **confirmed** — absent from the list |
+| CR1 `chr1:207521012:T:C` still excluded | **confirmed** — present (frequency test + 64.5% `divco_hs` call rate) |
+| no sentinel output anywhere | **confirmed** — `step6_summary.txt` has none |
+
+**Found — the grain is unchanged in shape on the new PCs:** 12,495 rows × 22 cols, 17 viable
+contrasts, `within_cohort=17 cross_cohort=15 partial=12`, BR's 95 retained as 76 EUR / 13 AJ / 3 AMR
+/ 1 AAC / 1 AFR / 1 CAH. So changing the list by 228 variants moved no contrast across the ≥100
+viability floor.
+
+**Ruled out, by grepping the log first rather than investigating (rule 1 working as intended).**
+`analysis_grain.py` printed `214 dx conflicts` and `10 pheno conflicts`; those exact counts are
+already recorded at the 2026-08-17 entry as expected and reconciled by §12. No diagnostic was run.
+
+**Found — the age covariate is absent, by design, and that design was documented only in code.**
+`analysis_grain.py` printed `age covariate: NOT FOUND in grain — running WITHOUT age`. Not a
+regression: `07_gwas.sh:52-57` and `analysis_grain.py:240-241` both record the reason — AMP-AD
+supplies age at death, AMP-PD age at baseline/analysis, and they are not the same variable, so it
+cannot be forced. Both detect an age column by header name (`age`, `age_analysis`, `agedeath`,
+`age_death`, `age_baseline`, `age_cov`) and warn when absent. **Age is the dominant confounder for
+both AD and PD, so this is a live methods limitation** and it was reachable only by reading two
+scripts — now HANDOFF known issue 9. Note it is also a third face of known issue 1: the same
+six-name detection is implemented twice, independently.
+
+**Still open — the eta² table is now measured on a superseded list.** The
+`EUR 0.757 → 0.036 (95.2%)` figure is the 4,415 measurement and the live list is 4,187. The 228
+withheld are HWE-only additions (general variant QC, not cohort-artifact removal), so EUR should
+barely move — but that is a prediction, and this table is the project's first-party proof the filter
+works, cited in three places. `review/plot_af_filter_effect.py` against this run's two manifests is
+the next action; HANDOFF carries a warning on the table until then.
+
+---
+
+## 2026-08-20 (night) — the sentinel is DELETED from both call sites, and the 08 sub-question is decided
+
+**Did.** Executed the removal decided earlier today. From `scripts/af_concordance_build.py`: the
+`gene_annot` import, `sentinel_detail()`, `keep_n()`, the `---- sentinel loci ----` block including
+its refFlat-failure banner, `arm_index` and the loop populating it, and the per-arm `.keep` writes in
+`assoc_pair()`. From `scripts/08_ctrl_ctrl_filter.py`: the import and the KNOWN LOCI block. From
+`scripts/gene_annot.py`: `SENTINEL_GENES`, `SENTINEL_FLANK`, `SENTINEL_VARIANTS`, `sentinel_hits()`.
+All three compile; the CLI is smoke-tested in both modes. **Not yet run on the cluster, and not yet
+rsynced.**
+
+**Decided — the 08 sub-question: remove both.** HANDOFF framed this as genuinely open, because 08's
+report served the opposite purpose (a known locus in the ctrl-vs-ctrl scan is the screening
+asymmetry showing up, i.e. an argument *against* subtracting) and step 8 never deletes. The
+volume critique also does not transfer: 08's flagged set is variants at ctrl-vs-ctrl P < 1e-5, tens
+to low hundreds, not 4,415, so it would not have produced a 1,700-line census.
+
+What settled it is the **negative**, not the volume. Line 110 of the old file could print `no known
+AD/PD locus among the flagged` off an uncited 9-gene list, and in this file that sentence is
+actively dangerous — it reads as reassurance that the flags are safe to subtract into `.ccfilt.tsv`.
+A flagged variant sitting on a real locus outside those 9 produced byte-identical output. That is
+rule 3 in the exact shape 08's own docstring was written to fix (it once carried a hardcoded window
+table covering 37% of CR1 and naming no HLA gene, so it could report "no known locus flagged" while
+sitting on HLA-DRB1); resolving coordinates from refFlat narrowed the hole without closing it. The
+±500 kb mislabelling applies identically — the 21 "LRRK2±500kb" variants were in SLC2A13/C12orf40.
+
+**Nothing was lost, and this is why the removal is not a downgrade.** The substantive warning 08's
+block existed to deliver does not depend on a gene list, so it is now printed unconditionally, for
+every flagged variant rather than for nine: the control arms differ by disease *screening*, a real
+AD locus is EXPECTED here, judge hits individually in `.ccannot.tsv`. The per-locus naming that was
+genuinely useful moved to `gene_annot.py --at <chr:pos>`, which is unarbitrary and correctly
+labelled.
+
+**Changed, incidentally, both to stop deleted concepts from lingering (rule 2).**
+`sentinel_regions` → `gene_regions`: it was never sentinel-specific — it resolves whatever symbols
+it is handed — and the name would have outlived the set it was named for. And the `--at` CLI now
+parses through `parse_variant_id` rather than its own inline `replace("chr","")`/`partition`, which
+(a) stops `parse_variant_id` becoming dead code now that `sentinel_hits` is gone, (b) accepts full
+`chr12:40227079:C:T` variant IDs so IDs from an exclusion list paste straight in, and (c) errors
+cleanly on unparseable input instead of raising.
+
+**Changed — `CLAUDE.md`, three places that asserted a check which no longer exists.** Rule 6 said
+"the sentinel tripwire is the check on 6a's licence"; that was the most load-bearing staleness, since
+it told the next session to rely on something absent. It now says there is deliberately no automated
+check and describes what replaces it (stage B's BY CALLSET PAIR and HWE ratio tables, the per-cell
+`.afreq` intermediates read by header name, call rate as the usual tell). Rule 3's "both sentinel
+call sites now print a banner instead" became the stronger general lesson: **a check whose negative
+result is not evidence should be deleted, not annotated with a caveat.** Rule 2's example now
+records that wiring the replacement is what made the concept testable, and the test killed it.
+
+**Kept, deliberately, as comments where the code was.** Three things that cost a run each and would
+otherwise be re-derived: that call rate rather than frequency is what resolves these hits (CR1:
+156/242 alleles in `divco_hs`, 242/242 at the LRRK2 site — dropout, a mechanism); that reading
+`.afreq` positionally hid that number on the first attempt; and the MAPT±500kb measurement (2,286 of
+2,318 EUR AD-vs-PSP hits, the other 32 beyond 46,528,333 in the 17q21.31 inversion tail) which is
+why 500 kb was a defensible proxy for step 8's question and a poor one for 6a's.
+
+**Ruled out — a claim made and retracted within this entry: "`ref/` is not in git."** It is. Both
+`ref/refFlat.txt` and `ref/highld_exclude_hg38.bed` are tracked, `.gitignore` exists, and its lines
+61-64 record the deliberate decision to ship them ("small, public, and the reason a fresh clone can
+run gene_annot.py with no setup", with the large non-redistributable references left in `data/ref/`).
+So `README.md`'s "ships with the code" is accurate and nothing needs committing.
+
+**The cause is worth more than the claim: `Bash` keeps its working directory between calls.** An
+earlier `cd scripts` persisted, so `ls -a`, `git ls-files`, `grep .gitignore` and `git check-ignore`
+all ran against `scripts/` — where there is indeed no `ref/` and no `.gitignore` — and every one
+returned a true answer to the wrong question. Same failure class as rule 4 (`.afreq` column 5) and
+the file-count check: the command succeeded, so nothing looked wrong. **Pass absolute paths, or
+prefix `cd <root> &&`, when checking whether a file exists.**
+
+**Next.** 1. Both rsyncs. 2. Step 6 with the HWE gate on (~7 min); read the withheld count and the
+new list size. 3. `analysis_grain.py` (~1 min). 4. Step 7.
 
 ---
 

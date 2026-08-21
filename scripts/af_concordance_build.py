@@ -104,21 +104,21 @@ import shutil
 import subprocess
 import sys
 
-# Known loci we must NOT silently delete. Tripwire only — nothing is auto-whitelisted. A hit means
-# the cell design did not fully separate technical from real, or that locus is genuinely broken in
-# one callset. Either way: stop and look.
-#
-# COORDINATES LIVE IN ONE PLACE, AND IT IS NOT HERE. This used to be a hardcoded
-# [(name, chrom, pos, window)] table, duplicated verbatim into 08_ctrl_ctrl_filter.py. Measured
-# against ref/refFlat.txt those windows covered 37% of CR1, 52% of LRRK2 and 66% of SNCA, and the
-# set contained no HLA gene at all — while HLA-DRB1 is one of this study's two real findings. A
-# tripwire that sees a third of its gene reports "none — no flagged variant falls near a headline
-# locus" and reads as a clean result. gene_annot.py resolves full transcript extents from refFlat
-# at runtime, verifies the build via APOE, and warns on any symbol it cannot resolve; importing it
-# is what keeps the two scripts from drifting apart again.
-from gene_annot import load_genes, sentinel_hits, SENTINEL_FLANK
-
-
+# NO SENTINEL-LOCUS TRIPWIRE HERE, DELIBERATELY — removed 2026-08-20, and it should not come back.
+# It reported which flagged variants fell in a hand-picked 9-gene set. Three reasons it went:
+#   1. It gated nothing. Stage C of step 6 applies this list later in the SAME job, so the tripwire
+#      was a report printed after the fact, never a checkpoint.
+#   2. It was a census, not a tripwire — 279 hits across 8 loci and ~1,700 lines of per-arm tables
+#      on its first run against corrected coordinates. 245 of the 279 were MHC.
+#   3. The 9-gene set had no citation behind it, so it scrutinised a handful while the other ~4,100
+#      flagged variants got none, and it could print a NEGATIVE ("no flagged variant falls in a
+#      sentinel locus") that no evidence supported. Either every deletion needs justification or
+#      none does.
+# The aggregate question it was groping at — "is this filter disproportionately hitting known
+# loci?" — is answered per-variant by the BY CALLSET PAIR table plus the per-arm frequencies, which
+# is what actually settled CR1 (dropout) and LRRK2 (the HWE excess-over-chance defect). See
+# PROJECT_LOG.md 2026-08-20. To ask "what gene is this variant in", use the gene_annot.py CLI:
+#     python3 scripts/gene_annot.py --at chr12:39977709
 def run(cmd):
     """plink2 with output captured. stderr=STDOUT because capture_output alone hides plink's
     errors entirely (documented gotcha) — a silent failure here would look like a real result."""
@@ -186,11 +186,10 @@ def assoc_pair(qc, work, fid, anc, dx, x, ids_x, y, ids_y, a):
     asymptotically equivalent, not identical, so it would have moved the flags and cost us the
     verification above). Both shell wrappers therefore load MOD_PLINK1 unconditionally.
     """
-    # Per-arm keeps, written under the same names the --freq stage used, so the intermediates
-    # stay addressable by hand and sentinel_detail() can reuse them.
-    for cs, ids in ((x, ids_x), (y, ids_y)):
-        (work / f"{anc}_{dx}_{cs}.keep").write_text(
-            "".join(f"{fid[i]}\t{i}\n" for i in ids))
+    # The .pheno file below IS the arm membership record — both arms, one per line, 2=x and 1=y —
+    # so it is what to read when a flagged variant needs resolving by hand. Per-arm .keep files
+    # used to be written here as well; they duplicated that membership and existed only to feed the
+    # deleted sentinel_detail(). `--assoc` needs the pheno file and nothing else.
     ph = work / f"{anc}_{dx}_{x}__vs__{y}.pheno"
     # plink1.9 case/control coding: 2 = case, 1 = control. Which arm is which is arbitrary —
     # |F_A - F_U| and CHISQ are both symmetric.
@@ -233,52 +232,14 @@ def assoc_pair(qc, work, fid, anc, dx, x, ids_x, y, ids_y, a):
     return tested, bad
 
 
-def sentinel_detail(hits, arm_index, work, plink2):
-    """Per-arm ALT frequency and CALL RATE for every sentinel hit, printed under the tripwire.
-
-    WHY THE CALL RATE IS HERE. On 2026-08-20 the CR1 hit was resolved twice by hand-running awk
-    over the .afreq intermediates, and the first attempt read the columns positionally and
-    mislabelled them — hiding the number that turned out to BE the answer: divco_hs called that
-    variant in 156 of 242 alleles (64.5%) while every other arm was complete. Inflated ALT
-    frequency plus non-random dropout is lost reference calls, which is a mechanism; the frequency
-    gap alone was only its shadow. A tripwire that says "look here" should hand over what you need
-    to look with.
-
-    Cost is one tiny --freq per arm, restricted to the handful of flagged sentinel variants.
-    """
-    ids = sorted({v for _, near in hits for v in near})
-    if not ids or not arm_index:
-        return
-    snps = work / "sentinel_hits.snplist"
-    snps.write_text("".join(f"{v}\n" for v in ids))
-
-    per_variant = defaultdict(list)
-    for (anc, dx, cs), (qc, keep) in sorted(arm_index.items()):
-        stem = work / f"sentinel_{anc}_{dx}_{cs}"
-        run([plink2, "--bfile", str(qc), "--keep", str(keep),
-             "--extract", str(snps), "--freq", "--out", str(stem)])
-        if not Path(f"{stem}.afreq").exists():
-            continue
-        with open(f"{stem}.afreq") as fh:
-            hdr = fh.readline().lstrip("#").rstrip("\n").split("\t")
-            i_id, i_f, i_n = hdr.index("ID"), hdr.index("ALT_FREQS"), hdr.index("OBS_CT")
-            for line in fh:
-                t = line.rstrip("\n").split("\t")
-                per_variant[t[i_id]].append((f"{anc}/{dx}/{cs}", t[i_f], t[i_n], len(keep_n(keep))))
-
-    print("\n  per-arm detail for the hits above "
-          "(call rate << 100% in ONE arm is dropout, not a frequency difference):")
-    for v in ids:
-        print(f"    {v}")
-        for label, f, n, n_samp in per_variant.get(v, []):
-            rate = 100 * int(n) / (2 * n_samp) if n_samp else 0.0
-            print(f"        {label:28} ALT_FREQ={f:<10} OBS_CT={n:>6}  call rate={rate:5.1f}%")
-
-
-def keep_n(path):
-    """Lines of a keep file, for turning OBS_CT (alleles) into a call rate."""
-    with open(path) as fh:
-        return [ln for ln in fh if ln.strip()]
+# A per-arm ALT-frequency + CALL-RATE printer (sentinel_detail) lived here until 2026-08-20 and was
+# deleted with the tripwire that called it. Its one durable lesson is worth keeping even though the
+# code is not: CALL RATE, not frequency, is what resolves these hits. CR1 was excluded because
+# divco_hs called it in 156 of 242 alleles (64.5%) while the same samples were 242/242 at the LRRK2
+# site — non-random dropout, a mechanism. The frequency gap alone was only its shadow, and reading
+# the .afreq columns POSITIONALLY (plink2 puts PROVISIONAL_REF? at column 5) is what hid the number
+# on the first attempt. When a flagged variant needs resolving, run --freq per arm over the
+# af_concordance/ intermediates by hand, index by header name, and look at OBS_CT.
 
 
 def main():
@@ -383,7 +344,6 @@ def main():
     hwe_rows = []      # (anc, callset, n_controls, n_tested, n_fail, exp, ratio, voted)
     mishap_failed = set()
     mishap_rows = []                            # (anc, callset, n, n_ref, n_total_with_flanking)
-    arm_index = {}      # (anc, dx, callset) -> (qc stem, keep file). Only for sentinel_detail().
 
     for anc in ancs:
         qc = qcd / f"cohort_{anc}_qc"
@@ -431,8 +391,6 @@ def main():
             print(f"{anc}/{dx:8}: {desc}")
 
             names = sorted(arms)
-            for cs in names:
-                arm_index[(anc, dx, cs)] = (qc, work / f"{anc}_{dx}_{cs}.keep")
             for i in range(len(names)):
                 for j in range(i + 1, len(names)):
                     x, y = names[i], names[j]
@@ -635,45 +593,11 @@ def main():
     print(f"  never evaluated, so kept by default                   : {un:,} "
           f"({100*un/len(universe) if universe else 0:.1f}%)")
     print(f"\nwrote {a.out}")
-
-    # ── tripwire: is the filter reaching known biology? ──
-    # Windows are full transcript extents from refFlat ±SENTINEL_FLANK, resolved at runtime.
-    print(f"\n---- sentinel loci (gene extents ±{SENTINEL_FLANK//1000}kb from refFlat; "
-          f"expect empty) ----")
-    try:
-        genes = load_genes()
-        print(f"  refFlat: {load_genes.path}")
-        hits = sentinel_hits(sorted(flagged), genes=genes)
-    except (FileNotFoundError, ValueError) as e:
-        # Loud and non-fatal, deliberately. The list is already written and a 7-minute run should
-        # not be discarded over a missing annotation — but losing the tripwire in SILENCE is the
-        # failure mode this whole section exists to prevent, so it gets a banner, not a warning.
-        print("  " + "!" * 74)
-        print(f"  !! SENTINEL CHECK DID NOT RUN: {e}")
-        print("  !! The exclusion list was NOT checked against any known AD/PD locus.")
-        print("  !! Fix ref/refFlat.txt (or $REFFLAT) and re-run with SKIP_AF_BUILD unset before")
-        print("  !! trusting this list. Absence of a hit below is NOT evidence of no hit.")
-        print("  " + "!" * 74)
-        hits = None
-
-    if hits is None:
-        pass
-    elif not hits:
-        print("  none — no flagged variant falls in a sentinel locus.")
-    else:
-        n = sum(len(v) for _, v in hits)
-        for label, near in hits:
-            print(f"  {label:22} {len(near)} flagged:")
-            for v in near[:10]:
-                print(f"      {v}")
-            if len(near) > 10:
-                print(f"      ... and {len(near)-10} more")
-        print(f"\n  {n} flagged variant(s) in {len(hits)} sentinel locus/loci. Nothing is")
-        print("  auto-whitelisted. NOTE: stage C of step 6 applies this list LATER IN THE SAME")
-        print("  JOB, so this is a report, not a checkpoint — resolve each hit before step 7 reads")
-        print("  the association set, and record the verdict in PROJECT_LOG.md so that the next")
-        print("  run does not re-derive it. The per-arm table below is what to read it from.")
-        sentinel_detail(hits, arm_index, work, a.plink2)
+    print("\nThis list is applied by stage C of step 6, LATER IN THIS SAME JOB. Read the BY CALLSET")
+    print("PAIR table above before step 7 consumes the association set; resolve anything that looks")
+    print("wrong against the per-cell intermediates in af_concordance/ (index .afreq by HEADER NAME")
+    print("— column 5 is PROVISIONAL_REF?, not a frequency), and record the verdict in")
+    print("PROJECT_LOG.md so the next run does not re-derive it.")
 
     # ── provenance, beside the list ──
     # The list itself must stay a bare ID list for `plink2 --exclude`, so it cannot carry a

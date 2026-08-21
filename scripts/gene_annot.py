@@ -37,6 +37,13 @@ USAGE
     # CLI
     python3 scripts/gene_annot.py CR1 SNCA LRRK2 GBA1
     python3 scripts/gene_annot.py --at chr19:44888997 --at 6:32000000
+    python3 scripts/gene_annot.py --at chr12:40227079:C:T     # full variant IDs work too
+
+THIS CLI IS THE ANSWER TO "what gene is this variant in". It replaced a 9-gene sentinel list that
+two pipeline scripts used to check their flagged variants against (deleted 2026-08-20 — see the
+comment where SENTINEL_GENES used to live). Per-variant and unarbitrary beats a hand-picked set:
+asked this way, the 21 variants once reported as "LRRK2±500kb" turn out to be in SLC2A13 and
+C12orf40, 240-435 kb from LRRK2.
 
 GUARDRAIL: reads a public gene annotation only. No genotypes, no sample data.
 """
@@ -144,11 +151,15 @@ def gene_region(name, flank=0, genes=None):
     return (c, max(1, s - flank), e + flank)
 
 
-def sentinel_regions(names, flank=50_000, genes=None, warn=True):
+def gene_regions(names, flank=50_000, genes=None, warn=True):
     """-> [(display_name, chrom, start, end)] for a list of symbols, skipping unresolved ones.
 
     Unresolved names are reported to stderr rather than dropped in silence — that silence is
     precisely how the old GBA1 entry went unnoticed.
+
+    Named `sentinel_regions` until 2026-08-20. Nothing about it was ever sentinel-specific — it
+    resolves whatever symbols it is handed — and the name outlived the sentinel set it was named
+    for, which is how a deleted concept quietly stays alive in a codebase.
     """
     if genes is None:
         genes = load_genes()
@@ -165,45 +176,25 @@ def sentinel_regions(names, flank=50_000, genes=None, warn=True):
     return out
 
 
-# ── the shared sentinel set ───────────────────────────────────────────────────────────────────────
-# Headline AD/PD loci, used as tripwires by af_concordance_build.py (is the AF/HWE filter deleting
-# real biology?) and 08
-# (did the control-vs-control scan flag a real locus?). These are SYMBOLS — no coordinates live here,
-# they are resolved from refFlat at runtime. Defined once so the two scripts cannot drift apart.
-SENTINEL_GENES = [
-    "APOE",                                   # ±FLANK subsumes NECTIN2, TOMM40 and APOC1, so they
-                                              # are not listed separately — that would report one
-                                              # variant four times. Per-variant Annotator.label()
-                                              # still names the precise gene in the output.
-    "TREM2", "BIN1", "CR1",                   # established AD
-    "MAPT", "SNCA", "GBA1", "LRRK2",          # established PD (MAPT also 17q21.31 / PSP)
-    "HLA-B", "C4A", "HLA-DRB1",               # the MHC. HLA-DRB1/DRB5 is an established PD locus and
-                                              # is one of this study's two real findings, yet no HLA
-                                              # gene was in the table this replaced. Three anchors
-                                              # rather than one because a single gene ±FLANK does not
-                                              # span the region our own hits occupy (31.3-32.6 Mb).
-]
-
-# Uniform flank either side of every gene's full transcript extent.
+# ── NO SENTINEL SET LIVES HERE ANY MORE ───────────────────────────────────────────────────────────
+# `SENTINEL_GENES` (a 9-gene AD/PD list), `SENTINEL_FLANK` (500 kb), `SENTINEL_VARIANTS` (the two
+# APOE causal positions) and `sentinel_hits()` were deleted 2026-08-20, together with both callers —
+# af_concordance_build.py's tripwire and 08_ctrl_ctrl_filter.py's known-loci report. Reasons are in
+# those two files and in PROJECT_LOG.md; the short version is that an uncited 9-gene list makes a
+# NEGATIVE result printable ("no known locus flagged") that no evidence supports, and the 500 kb
+# flanks attach a gene's name to variants in entirely different genes 240-435 kb away.
 #
-# KNOWN LIMITATION, stated rather than hidden: this does not cover every locus completely. Measured
-# against EUR AD-vs-PSP, MAPT±500kb catches 2,286 of that contrast's 2,318 genome-wide hits; the
-# remaining 32 (1.4%) sit beyond 46,528,333, in the tail of the 17q21.31 inversion LD block. So the
-# miss is real but small. A uniform value was chosen
-# deliberately over per-locus tuning: the alternative was numbers derived from our own hit spans,
-# which is circular (it sizes the tripwire from the answer it is meant to protect) and tracks
-# statistical power rather than LD. Setting windows from r² decay against an external LD reference
-# panel is the principled fix and is not done here.
-SENTINEL_FLANK = 500_000
-
-# Causal variants worth naming individually. refFlat is a GENE annotation and cannot supply variant
-# positions, so these two stay as constants — but unlike the old table they are independently
-# corroborated: each position matches GRCh38 dbSNP AND the alleles match our own variant IDs
-# (chr19:44908684:T:C for ε4, chr19:44908822:C:T for ε2).
-SENTINEL_VARIANTS = {
-    "rs429358 (APOE-e4)": ("19", 44_908_684),
-    "rs7412 (APOE-e2)":   ("19", 44_908_822),
-}
+# Do not reintroduce it. The honest form of the same question is per-variant and already available:
+# `Annotator.label()` / the `--at` CLI name the gene a position actually falls in, for every variant
+# rather than for nine.
+#
+# Two measurements from the deleted code, kept because they cost a run each and would otherwise have
+# to be re-derived: MAPT±500kb caught 2,286 of EUR AD-vs-PSP's 2,318 genome-wide hits, the other 32
+# (1.4%) sitting beyond 46,528,333 in the tail of the 17q21.31 inversion LD block — so 500 kb was a
+# defensible LD-block proxy for "did my signal land in a known locus", and a poor one for "is this
+# variant part of a known locus". Sizing windows from r² decay against an external LD panel is the
+# principled fix and was never done. And a uniform flank was chosen over per-locus tuning on purpose:
+# tuning from our own hit spans sizes the check from the answer it is meant to protect.
 
 
 def parse_variant_id(vid):
@@ -216,33 +207,6 @@ def parse_variant_id(vid):
         return (c, int(p[1]))
     except ValueError:
         return None
-
-
-def sentinel_hits(ids, flank=SENTINEL_FLANK, genes=None, annot=None):
-    """Which sentinel loci do these variant IDs touch?
-
-    -> [(label, [ids...])], one entry per sentinel that matched, gene entries first. A variant inside
-    a sentinel gene (widened by `flank`) matches that gene; a variant at an exact SENTINEL_VARIANTS
-    position matches that variant by name. Empty list means no sentinel was touched.
-    """
-    if genes is None:
-        genes = load_genes()
-    parsed = [(v, parse_variant_id(v)) for v in ids]
-    parsed = [(v, cp) for v, cp in parsed if cp]
-    out = []
-    for g in SENTINEL_GENES:
-        r = gene_region(g, flank, genes)
-        if r is None:
-            continue
-        c, s, e = r
-        near = [v for v, cp in parsed if cp[0] == c and s <= cp[1] <= e]
-        if near:
-            out.append((f"{g}±{flank//1000}kb", sorted(near)))
-    for name, (c, p) in SENTINEL_VARIANTS.items():
-        exact = [v for v, cp in parsed if cp[0] == c and cp[1] == p]
-        if exact:
-            out.append((name, sorted(exact)))
-    return out
 
 
 class Annotator:
@@ -341,14 +305,22 @@ def _main(argv):
         print(f"  {len(load_genes.multi)} symbols span >1 contig (longest span kept)", file=sys.stderr)
 
     if names:
-        for n, c, s, e in sentinel_regions(names, flank, genes):
+        for n, c, s, e in gene_regions(names, flank, genes):
             via = "" if n in genes else f"  [via alias -> {ALIASES.get(n)}]"
             print(f"{n:12} {c}:{s:,}-{e:,}   {e - s + 1:,} bp{via}")
     if ats:
         ann = Annotator(genes)
         for a in ats:
-            c, _, p = a.replace("chr", "").partition(":")
-            p = int(p.split(":")[0])
+            # parse_variant_id, not a second inline parser: it accepts a bare 'chr:pos' and a full
+            # 'chr19:44908684:T:C' variant ID alike, so the IDs in an exclusion list or a .assoc can
+            # be pasted straight in. It was the only remaining caller-facing use after the sentinel
+            # deletion, and a duplicate parse here is what would have made it dead code.
+            cp = parse_variant_id(a)
+            if cp is None:
+                print(f"{a}: cannot parse as chr:pos or a chr:pos:ref:alt variant ID",
+                      file=sys.stderr)
+                continue
+            c, p = cp
             g = ann.genes_at(c, p)
             n, d = ann.nearest(c, p)
             print(f"chr{c}:{p:,}  in={','.join(g) if g else '-'}  nearest={n} ({d:,} bp)  "

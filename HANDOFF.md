@@ -36,7 +36,7 @@ stale against the run that produced it.
 | `scripts/af_concordance_build.{py,sh}` | step 6 **stage B**, in-job. The `.sh` is for re-tuning knobs only. |
 | `scripts/ancestry_qc_manifest.py` | step 6 stage E: `retained_samples_manifest.csv`, once per generation. |
 | `review/plot_af_filter_effect.py` | the collaborator-facing before/after figure + eta² tables. |
-| `scripts/gene_annot.py` + `ref/refFlat.txt` | **the single source of locus coordinates** — `sentinel_hits()` is imported by `af_concordance_build.py` and `08_ctrl_ctrl_filter.py`; no coordinates are hardcoded anywhere. CLI: `python3 scripts/gene_annot.py CR1 SNCA LRRK2` |
+| `scripts/gene_annot.py` + `ref/refFlat.txt` | **the single source of locus coordinates**, and now a **read-only CLI with no pipeline callers** — the sentinel API both pipeline scripts imported was deleted 2026-08-20. `python3 scripts/gene_annot.py CR1 SNCA LRRK2` / `--at chr12:40227079` |
 | `scripts/diag_order.py`, `scripts/diag_cah.sh` | read-only. Variant order vs the panel; postmortem of a genotools output dir. |
 | `review/` | goals 3 and 4: QQ/Manhattan, ctrl-vs-ctrl mask, eta² of callset on each PC. |
 | `data/**/metadata/` | the 11 clinical files `clinical_core.py` opens. Gitignored — controlled access. |
@@ -136,10 +136,14 @@ one way a list this job did not build can still reach stage C.
 
 ## Status
 
-**Step 6 has RUN as a single pass and the grain is rebuilt on its PCs.** `cohort_merged` is
-172,497,055 variants × 13,334 samples (job 27429821); step 6 is job **27857727** (2026-08-20,
-7m13s — all 11 strata reused stage A, so the merge was never re-scanned); `analysis_grain.csv` is
-12,495 rows × 22 cols, 17 viable contrasts, built 2026-08-20 on the filtered PCs.
+**The live association set is step 6's rerun on the GATED 4,187-variant list, 2026-08-20 21:37.**
+`cohort_merged` is 172,497,055 variants × 13,334 samples (job 27429821). Step 6 has now run twice as
+a single pass: job **27857727** (7m13s, ungated 4,415 list) and then the rerun with the HWE
+excess-over-chance gate on, which produced **4,187** and regenerated stages C/D/E — that rerun's PCs
+and manifests are what step 7 must read. `analysis_grain.csv` is 12,495 rows × 22 cols, 17 viable
+contrasts, rebuilt on the gated PCs; the shape is identical to the ungated run, so no contrast
+crossed the ≥100 floor. *(Job ID for the rerun not yet recorded here — add it from
+`scripts/runlog.sh`.)*
 
 **Both regression tests for the refactor passed.** Stage B rebuilt the exclusion list through
 `sample_annot.csv` and got 4,415 variants — the same count job 27697096 got through the grain — and
@@ -147,45 +151,47 @@ one way a list this job did not build can still reach stage C.
 
 ---
 
-## NEXT ACTION — delete the sentinel-loci tripwire from the pipeline
+## The sentinel tripwire is DELETED — done 2026-08-20, both call sites, not yet run
 
-**Decision taken 2026-08-20. Remove it outright; do NOT make it configurable.** Rationale is in
-`PROJECT_LOG.md` under that date. Short version: on its first run against the corrected gene
-coordinates it produced **279 hits across 8 loci and ~1,700 lines of per-arm tables** — that is a
-census, not a tripwire. It is a report, not a gate, and it fires *after* stage C has already applied
-the list in the same job, so it has no mechanical effect at all. And the 9-gene list is arbitrary
-with no citation behind it: it scrutinises a hand-picked handful while the other ~4,100 flagged
-variants get none. Either every deletion needs justification or none does.
+**Removed from `scripts/af_concordance_build.py`** (the import, `sentinel_detail()`, `keep_n()`, the
+`---- sentinel loci ----` block, `arm_index`, and the per-arm `.keep` writes in `assoc_pair()` —
+those duplicated the `.pheno` file's membership and existed only to feed `sentinel_detail`), **and
+from `scripts/08_ctrl_ctrl_filter.py`.** `SENTINEL_GENES` / `SENTINEL_FLANK` / `SENTINEL_VARIANTS` /
+`sentinel_hits()` are gone from `scripts/gene_annot.py` with them; `load_genes` / `gene_region` /
+`Annotator` / `parse_variant_id` stay. All three files compile and the CLI is smoke-tested.
 
-**What to remove from `scripts/af_concordance_build.py`:**
+**The 08 sub-question was decided: remove both.** 08's report served the opposite purpose (a known
+locus in the ctrl-vs-ctrl scan is the screening asymmetry, an argument *against* subtracting), so it
+was not obviously the same decision. What settled it is the **negative** it could print — "no known
+AD/PD locus among the flagged", off an uncited 9-gene list, reads as reassurance that the flags are
+safe to subtract, and a flagged variant on a real locus outside those 9 produced identical output.
+That is this project's rule 3 ("absence of a warning is not evidence") in the exact shape 08's own
+docstring was written to fix, and resolving coordinates from refFlat had narrowed the hole without
+closing it. Nothing was lost: the substantive warning 08 needed does not depend on a gene list and
+is now printed unconditionally for every flagged variant.
 
-| | |
-|---|---|
-| `from gene_annot import load_genes, sentinel_hits, SENTINEL_FLANK` | the import |
-| `sentinel_detail()` and `keep_n()` | ~40 lines |
-| the `---- sentinel loci ----` block at the end of `main()` | including the refFlat failure banner |
-| `arm_index` | the dict and the loop that populates it — it exists ONLY for `sentinel_detail` |
-| the per-arm keep-file writes in `assoc_pair()` | keep ONLY if wanted as hand-inspectable intermediates; `--assoc` itself needs just the pheno file |
+Two smaller changes fell out, both to keep dead concepts from lingering (rule 2):
+`gene_annot.sentinel_regions` → **`gene_regions`** (it was never sentinel-specific, and the name
+outlived the set), and the `--at` CLI now parses through `parse_variant_id` instead of its own
+inline parser — so it accepts full `chr12:40227079:C:T` IDs, errors cleanly on junk, and
+`parse_variant_id` does not become dead code.
 
-**Keep `scripts/gene_annot.py`.** It stays valuable as the CLI for "what gene is this variant in"
-(`python3 scripts/gene_annot.py --at chr12:39977709`), which is what resolved the mislabelling
-described below. Its `SENTINEL_GENES` / `SENTINEL_FLANK` / `sentinel_hits()` become dead code once
-both callers are gone — delete those three, keep `load_genes` / `gene_region` / `Annotator`.
+**Kept: `scripts/gene_annot.py` as the CLI for "what gene is this variant in."** This is the honest
+per-variant replacement, and it is what exposed the mislabelling: `--at chr12:40227079` → `LRRK2`.
 
-**Open sub-question, decide before editing:** `scripts/08_ctrl_ctrl_filter.py` also calls
-`sentinel_hits` (wired 2026-08-20). Its purpose is the *opposite* — a known locus appearing in the
-control-vs-control scan is the screening asymmetry showing up, i.e. an argument for **not**
-subtracting — and step 8 never deletes anything. Same critiques apply (arbitrary list, 500 kb
-flanks, the MHC will dominate), but the decision is not the same one. Either remove both and rely on
-`.ccannot.tsv` being read directly, or keep 08's and delete only 6a's.
+**Why the ±500 kb windows made it worse, recorded so it is not repeated.** The flank was sized for
+step 8's question ("did my association signal land in a known locus?", where LD blocks matter — it
+measured MAPT±500kb catching 2,286 of 2,318 hits). For 6a's question ("am I deleting a variant that
+is part of a known locus?") it labels flank hits with the gene's name, and **none of the 21
+"LRRK2±500kb" variants were in LRRK2** — they were in `SLC2A13` and `C12orf40`, 240–435 kb away.
+Same for SNCA (intergenic), GBA1 (`DAP3`), APOE (`ZNF285`/`ZNF229`).
 
-**Why the ±500 kb windows made it worse, recorded so it is not repeated.** The flank was sized in
-`gene_annot.py` for step 8's question ("did my association signal land in a known locus?", where LD
-blocks matter — it measured MAPT±500kb catching 2,286 of 2,318 hits). For 6a's question ("am I
-deleting a variant that is part of a known locus?") it labels flank hits with the gene's name, and
-**none of the 21 "LRRK2±500kb" variants were in LRRK2** — they were in `SLC2A13` and `C12orf40`,
-240–435 kb away. Same for SNCA (intergenic), GBA1 (`DAP3`), APOE (`ZNF285`/`ZNF229`). Verified with
-`python3 scripts/gene_annot.py --at <pos>`.
+### NEXT ACTION — rsync, then step 6 with the HWE excess-over-chance gate
+
+Nothing has been run since the deletion. The gate is written and defaults ON (known issue 7, which
+records that it leaves CR1 excluded and un-excludes LRRK2). **Both rsyncs**, then step 6 (~7 min)
+and `analysis_grain.py` (~1 min), then step 7. Note `rsync` cannot express a deletion — but no file
+was retired here, only edited, so nothing needs removing by hand this time.
 
 ### The MHC aggregate question — NOT a gate on step 7. Decided 2026-08-20.
 
@@ -258,10 +264,13 @@ blocks anything.
 | 6 ancestry QC, single pass | **done** — job 27857727. Stage B rebuilt 4,415 (matches 27697096) |
 | `analysis_grain.py` | **done 2026-08-20** — 12,495 rows × 22 cols, 17 viable, BR fixed |
 | frequency test → `plink --assoc` | done + **VERIFIED IDENTICAL** 2026-08-20, job `af_swap_test2` |
-| HWE excess-over-chance gate | written, default ON, **NOT YET RUN** — see known issue 7 |
-| **remove the sentinel entirely** | **NEXT ACTION — see below. Nothing else should run first.** |
+| HWE excess-over-chance gate | **done + RUN 2026-08-20** — list is **4,187** (was 4,415); LRRK2 un-excluded, CR1 still excluded |
+| **remove the sentinel entirely** | **done + RUN 2026-08-20** — both call sites + the `gene_annot` API; no sentinel output in `step6_summary.txt` |
+| step 6 rerun on the gated list | **done 2026-08-20** — 4,187-variant list applied; stage D/E regenerated |
+| grain on the gated PCs | **done 2026-08-20** — 12,495 × 22, 17 viable, unchanged shape |
+| eta² re-measurement on 4,187 | **NEXT ACTION** — `review/plot_af_filter_effect.py`; the 0.757→0.036 figure below is still the 4,415 measurement |
 | MHC flag-rate measurement | **not a gate — deferred to write-up 2026-08-20.** Per-arm tables already settled subtract-vs-annotate; the rate is a methods number |
-| 7 GWAS | after the sentinel removal and the HWE-gate rerun |
+| 7 GWAS | after the HWE-gate rerun |
 
 **Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
 the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage
@@ -283,6 +292,12 @@ the four-callset cohort: AJ PC1 **0.984**, EUR PC2 **0.757**. Removing BR change
 |---|---|---|---|
 | EUR | 0.757 (PC2) | **0.036** (PC6) | **95.2%** |
 | AJ | 0.984 (PC1) | **0.962** (PC1) | 2.2% |
+
+⚠️ **These two rows are the 4,415-variant measurement and the live list is now 4,187.** The 228
+withheld variants were HWE-only additions — general variant QC, not cohort-artifact removal — so
+EUR should barely move, but that is a *prediction*, and this table is cited as first-party measured
+evidence in three places. Re-run `review/plot_af_filter_effect.py` against the manifests step 6
+wrote this run and replace these numbers before quoting them again.
 
 **EUR: solved.** 0.058% of its variants carried essentially all the callset structure in its PCs.
 
@@ -322,9 +337,13 @@ methods limitation, and BR sits entirely on the AMP-PD side of the primary contr
 is read by steps 4 and 6. It now holds a real ancestry spread and is usable. (Note the filename
 says `linearsvc` but the model is XGBoost — a GenoTools naming artifact, not a description.)
 
-**`analysis_grain.csv`'s BR-DSNWGS rows are wrong and must be regenerated.** The grain carries
-19 AFR / 67 EUR over 86 rows; the correct run gives 1 AFR / 77 EUR over 97 samples. Not
-reconcilable — regenerate the PCs and labels before step 7.
+**~~`analysis_grain.csv`'s BR-DSNWGS rows are wrong~~ — CLOSED 2026-08-20, regenerated.** The old
+grain carried 19 AFR / 67 EUR over 86 rows, which was not reconcilable with the post-`--sort-vars`
+run. The cluster's grain is now 12,495 rows × 22 cols on step 6's filtered PCs, and its 95 retained
+BR samples are 76 EUR / 13 AJ / 3 AMR / 1 AAC / 1 AFR / 1 CAH — the same item recorded as closed at
+the top of this file. (Step 1's pre-exclusion spread is 77 EUR / 1 AFR over 97; the difference is
+the 2 samples step 5 drops, not a disagreement.) **The laptop's copy is still the stale 11,918-row
+one** and must never be rsynced upward — see Provenance.
 
 **Blocker 1 — genotools crashed. FIXED 2026-08-12.** GenoTools sized its GridSearchCV worker
 pool from the *node* (`os.cpu_count()`), not the SLURM allocation, and biowulf's per-user
@@ -385,8 +404,8 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    ```
    6  A  unfiltered per-ancestry QC + PCA   -> by_ancestry_qc/unfiltered/   (the BASELINE, kept)
       B  af_concordance_build              -> exclude_af_concordance.txt   (from A, in-job)
-         read the BY CALLSET PAIR table + the sentinel tripwire in its log
-         (windows come from gene_annot.py/refFlat at runtime — no hardcoded coordinates)
+         read the BY CALLSET PAIR table and the per-cell HWE ratio table in its log
+         (the sentinel tripwire that used to print here was deleted 2026-08-20)
       C  apply the exclusion               -> cohort_<ANC>_qc              (the ASSOCIATION set)
       D  prune + PCA on the filtered set   -> cohort_<ANC>_pca             (the COVARIATES)
       E  both retained_samples_manifest.csv files
@@ -453,12 +472,22 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    before it was truncated, so nothing is blocked, but DivCo cannot be re-derived from source
    without re-pulling from Synapse.
 
-7. **~~The HWE stage has no excess-over-chance gate~~ — FIXED 2026-08-20, not yet run.** A
+7. **~~The HWE stage has no excess-over-chance gate~~ — FIXED AND RUN 2026-08-20. CLOSED.** A
    (stratum × callset) cell now contributes exclusions only if its rejection count exceeds the
    number expected by chance at `--hwe`. No multiplier: E/O is the Benjamini-Hochberg FDR estimate
    for that cell's rejections, so at or below 1.0× there is nothing to attribute.
    `HWE_REQUIRE_EXCESS=0` restores the old unconditional union, which is what reproduces the
-   4,415-variant list. The evidence that motivated it, from job 27857727:
+   4,415-variant list.
+
+   **Result: the list is 4,187 variants** (from 4,415 — 228 removed). Both below-chance cells were
+   `WITHHELD` and `EUR`/`wgs_harm` voted, exactly as designed; the provenance sidecar records
+   `require-excess : True`. Both settled predictions held: `chr12:40227079:C:T` (LRRK2) is **gone**
+   from the list, and CR1 `chr1:207521012:T:C` **remains** excluded on the frequency test plus its
+   64.5% `divco_hs` call rate. The 228 is one short of the "up to 229" estimate below, so 228 of
+   those variants were unique to the two withheld cells and 1 was independently flagged by another
+   channel. `step6_summary.txt` contains no sentinel output, confirming that removal is live too.
+
+   The evidence that motivated the gate, from job 27857727:
 
    | stratum | callset | controls | fail | exp by chance | ratio |
    |---|---|---|---|---|---|
@@ -506,6 +535,23 @@ inventory, and §10 writes `br_dsnwgs_update_sex.txt` (60M / 37F).
    loaded only for the optional mishap stage. Note `07_gwas.sh:49` records a deliberate preference
    *not* to rely on plink1.9 being present; step 7 still doesn't, but step 6 stage B now does. If
    that module ever goes away, the fallback is `--glm` plus a fresh equivalence check.
+
+9. **No age covariate, and it cannot simply be added.** Every run prints `age covariate: NOT FOUND
+   in grain — running WITHOUT age`. This is by design, not a regression: AMP-AD supplies age at
+   **death**, AMP-PD age at **baseline/analysis**, and they are not the same variable, so forcing
+   one column would silently mix two quantities. Both `analysis_grain.py` §13 and `07_gwas.sh`
+   detect an age column by header name (`age`, `age_analysis`, `agedeath`, `age_death`,
+   `age_baseline`, `age_cov`) and warn when absent.
+
+   **Age is the dominant confounder for both AD and PD, so state this as a limitation in the
+   methods.** AD-by-neuropathology donors are older at collection than the AMP-PD arms, and the
+   primary contrast is exactly the one where the two age variables are least comparable — the
+   `within_cohort` contrasts are the only ones where an age term would mean the same thing on both
+   arms. Fixing it properly needs the phenotype track to emit one harmonized age, which nothing
+   currently does. Recorded here 2026-08-20 because until then it lived only in two code comments.
+
+   Also a third instance of known issue 1: that six-name detection is implemented independently in
+   both places.
 
 ## Provenance
 
