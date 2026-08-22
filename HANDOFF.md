@@ -15,8 +15,10 @@ neuropathology**.
 
 Code and data share a root. On biowulf that root is `/data/CARDPB2/sysbio/wgs`; on a laptop it is
 wherever the repo was cloned. **Nothing in this project contains an absolute path** — `config.sh`
-derives the root from its own location, and `clinical_common.py`, `05_excludelist.py` and
-`ancestry_qc_manifest.py` each do the same. To move the project, copy the folder.
+derives the root from its own location, and `clinical_common.py`, `05_excludelist.py`,
+`ancestry_qc_manifest.py` and `wgs_core.ipynb` each do the same. To move the project, copy the
+folder. The last two exceptions closed 2026-08-21: `01_genotools.sh` had carried three hardcoded
+paths since 2026-08-11 as a debugging baseline, and the notebook hardcoded the cluster root.
 
 That collapses three things that used to be separate and disagree: `WGS_ROOT`, `PROJECT_ROOT`, and
 the old `BUNDLE` (which pointed one directory level away from where the code actually was).
@@ -30,7 +32,7 @@ stale against the run that produced it.
 | `clinical_core.py` | goal 1, first half. Runs **once, before step 1**. Reads `data/`, writes `clinical_core_out/`. |
 | `analysis_grain.py` | goal 1, second half — §11-13. Runs **once, after step 6**, on its PCs. |
 | `clinical_common.py` | paths, readers, and the reconciliation rules both halves share. Imported, never run. |
-| `wgs_core.ipynb` | goal 2 orchestrator — ssh/sbatch driver. §3 step 6, §4 the before/after proof. |
+| `wgs_core.ipynb` | goal 2 orchestrator. **Runs ON biowulf** as of 2026-08-21 — direct sbatch, no ssh except to helix for transfers. Carries the whole tier-1 sequence. |
 | `config.sh` | every path, derived from its own location. `submit.sh` — sbatch wrapper. |
 | `scripts/00`–`08` | env, genotools, normalize, merge, relatedness, excludelist, ancestry QC, GWAS, ctrl-vs-ctrl. |
 | `scripts/af_concordance_build.{py,sh}` | step 6 **stage B**, in-job. The `.sh` is for re-tuning knobs only. |
@@ -38,7 +40,7 @@ stale against the run that produced it.
 | `review/plot_af_filter_effect.py` | the collaborator-facing before/after figure + eta² tables. |
 | `scripts/gene_annot.py` + `ref/refFlat.txt` | **the single source of locus coordinates**, and now a **read-only CLI with no pipeline callers** — the sentinel API both pipeline scripts imported was deleted 2026-08-20. `python3 scripts/gene_annot.py CR1 SNCA LRRK2` / `--at chr12:40227079` |
 | `scripts/diag_order.py` | read-only **preflight gate** — variant order vs the reference panel. Run on any callset not already cleared, BEFORE step 1. |
-| `review/` | goals 3 and 4: QQ/Manhattan, ctrl-vs-ctrl mask, eta² of callset on each PC. |
+| `review/` | goals 3 and 4: QQ/Manhattan, eta² of callset on each PC, the AF-filter before/after. Runs on the cluster against outputs in place. |
 | `data/**/metadata/` | the 11 clinical files `clinical_core.py` opens. Gitignored — controlled access. |
 | `PROJECT_LOG.md` | append-only: what we did, why, and what was ruled out. This file is state; that one is history. |
 
@@ -47,100 +49,24 @@ copy under `metadata/`.
 
 ## Run order
 
-Everything runs on the cluster, so there are no round trips. **Code reaches the cluster by
-`rsync`, not `git pull`** — there is no remote (see Provenance). Because `rsync` without
-`--delete` cannot express a deletion, renamed or retired scripts must be removed by hand; that
-has caused three separate stale-artifact bugs, so check before assuming.
+**`README.md` "Run order" is the map and `wgs_core.ipynb` is the executable copy.** Not duplicated
+here: two copies of a run order is how the wrong one gets followed.
 
-The clinical side runs at two points and step 6 runs **once**:
+What this file adds is the state that map does not carry — what has already run, and what is open.
+Two prerequisites worth repeating because they fail a run rather than a step:
 
-```bash
-# BOTH lines. The clinical side lives at the project ROOT, not under scripts/ — an rsync of
-# scripts/ alone silently leaves the cluster on the old single-file clinical_core.py.
-# The host is the FQDN: there is no `helix` ssh alias, so a bare `helix:` fails to resolve.
-# Transfers go through helix, never biowulf (scp to biowulf fails — PROJECT_LOG 2026-08-11).
-ROOT=/data/CARDPB2/sysbio/wgs
-rsync -av --exclude='logs/' --exclude='__pycache__/' scripts/ helix.nih.gov:$ROOT/scripts/
-rsync -av clinical_common.py clinical_core.py analysis_grain.py config.sh helix.nih.gov:$ROOT/
+- **`analysis_grain.py` before any step-7 rerun.** A `contrasts.csv` predating 2026-08-21 has no
+  callset-skew columns and step 7 exits 3 naming the missing one. Rerun the grain, don't patch it.
+- **Both clinical scripts are cluster-only.** The laptop holds different clinical inputs and
+  silently produces a smaller, wrong table — known issue 4.
 
-cd /data/CARDPB2/sysbio/wgs && source config.sh
-
-module load python/3.11 && source .venv/bin/activate   # NOT the system Anaconda py3.9
-python3 clinical_core.py                  # §1-10  -> *_update_sex.txt
-                                          # §12a   -> sample_annot.csv
-
-# 0. VCF -> pgen. BR-DSNWGS only; the other three shipped as pgen or were built earlier.
-#    NO SCRIPT — this ran as notebook cells, and these two commands are the whole record.
-#    --sort-vars is not optional: see "Blocker 2" below.
-bcftools view --apply-filters 'PASS,.' --min-alleles 2 --max-alleles 2 --type snps \
-    $DIR_BR/joint_calls/AMPPD_postmortem_joint_gt_call_97donors.vcf.gz \
-  | bcftools annotate --set-id '%CHROM:%POS:%REF:%ALT' \
-  | bgzip -@ 8 > $DIR_BR/pgen/intermediate/br_dsnwgs_filtered.vcf.gz
-plink2 --vcf $DIR_BR/pgen/intermediate/br_dsnwgs_filtered.vcf.gz \
-    --chr 1-22,X,Y --split-par hg38 --update-sex placeholder_sex.txt \
-    --make-pgen --out $RAW_BR
-
-# 1. genotools — once per callset. Reads the sex files in place from clinical_core_out/.
-./submit.sh scripts/01_genotools.sh --job-name=genotools_wgs_harm \
-  --export=PGEN=$RAW_WGS,SEX_FILE=$(sex_file wgs_harm),OUT_DIR=$DIR_WGS/genotools,DATASET=wgs_harm
-./submit.sh scripts/01_genotools.sh --job-name=genotools_divco_hs \
-  --export=PGEN=$RAW_DC,SEX_FILE=$(sex_file divco_hs),OUT_DIR=$DIR_DC/genotools,DATASET=divco_hs
-./submit.sh scripts/01_genotools.sh --job-name=genotools_wb_dwgs \
-  --export=PGEN=$RAW_WB,SEX_FILE=$(sex_file wb_dwgs),OUT_DIR=$DIR_WB/genotools,DATASET=wb_dwgs
-./submit.sh scripts/01_genotools.sh --job-name=genotools_br_dsnwgs \
-  --export=PGEN=$RAW_BR,SEX_FILE=$(sex_file br_dsnwgs),OUT_DIR=$DIR_BR/genotools,DATASET=br_dsnwgs
-
-# 2. normalize — once per callset.
-./submit.sh scripts/02_normalize.sh --job-name=norm_wgs --export=PFILE=$PF_WGS,OUT=$NORM_WGS,TAG=wgs
-./submit.sh scripts/02_normalize.sh --job-name=norm_dc  --export=PFILE=$PF_DC,OUT=$NORM_DC,TAG=dc
-./submit.sh scripts/02_normalize.sh --job-name=norm_wb  --export=PFILE=$PF_WB,OUT=$NORM_WB,TAG=wb
-./submit.sh scripts/02_normalize.sh --job-name=norm_br  --export=PFILE=$PF_BR,OUT=$NORM_BR,TAG=br
-
-./submit.sh scripts/03_merge.sh           # all four -> cohort_merged
-./submit.sh scripts/04_relatedness.sh     # KING, report-only
-./submit.sh scripts/05_excludelist.sh     # -> retained_manifest.csv
-./submit.sh scripts/06_ancestry_qc.sh     # A unfiltered QC+PCA · B build AF list · C apply
-                                          # D filtered QC+PCA   · E both manifests
-python3 analysis_grain.py                 # §11-13 -> analysis_grain.csv on the new PCs
-
-# the proof the filter works — reads both manifests step 6 wrote in that one job.
-# Runs LOCALLY in practice (notebook §4 rsyncs the two manifests down first); it needs no
-# genotypes, only the manifests, so either machine works.
-python3 review/plot_af_filter_effect.py \
-    --before $MERGED_DIR/by_ancestry_qc/unfiltered/retained_samples_manifest.csv \
-    --after  $MERGED_DIR/by_ancestry_qc/retained_samples_manifest.csv
-
-# Step 7 reads §13's pheno/covar/contrasts files, NOT $GRAIN (changed 2026-08-20, known issue 1).
-# So analysis_grain.py above is a hard prerequisite, and a contrasts.csv predating 2026-08-21 lacks
-# the callset-skew columns -> step 7 exits 3 naming the missing one. Rerun the grain, don't patch it.
-./submit.sh scripts/07_gwas.sh            # reads $PHENO_SRC/$COVAR_SRC/$CONTRASTS_CSV
-python3 review/plot_gwas.py               # QQ + Manhattan, local, on downloaded sumstats
-./submit.sh scripts/08_ctrl_ctrl_filter.sh   # annotates; never subtracts (see known issue 2)
-```
-
-**Two clinical invocations, and unlike step 6's two passes this one is real.** Step 1 applies the
-sex files; the grain carries step 6's PCs because step 7 reads them as covariates. There is no
-column to split out. What changed is that they are now two *files* rather than one script run
-twice — `analysis_grain.py` reads §9's audit tables instead of re-deriving them, so it no longer
-rewrites the sex files step 1 already consumed. Section numbers are unchanged.
-
-**Step 6 used to run twice, and the reason was wrong.** The claimed cycle was
-`grain ← §12 ← manifest ← step 6`, so step 6 could not depend on the grain. But
-`af_concordance_build` reads exactly `IID → (source_callset, dx_detailed)` — it never reads a PC,
-and it never reads ancestry either, because the stratum comes from which fileset a sample is in.
-Both fields are pure clinical output, so §12a now writes them as `sample_annot.csv` before step 1
-runs. Separately, `--geno/--maf/--hwe` are per-variant on a fixed sample set and therefore
-**commute with `--exclude`**, so pass 2 never needed to re-scan `cohort_merged` at all — stage C
-applies the list to stage A's output instead. See the header of `scripts/06_ancestry_qc.sh`.
-
-The stale-list guard is now structural rather than a check: stage B rebuilds the list inside the
-job from this merge. The mtime refusal survives only on the `SKIP_AF_BUILD=1` path, which is the
-one way a list this job did not build can still reach stage C.
+Code reaches the cluster by `git pull` (remote added 2026-08-21), never rsync.
 
 ## Status
 
-**THE PIPELINE IS COMPLETE THROUGH STEP 8 (2026-08-21).** Steps 0–8 have all run on the four-callset
-cohort. What is left is `review/plot_gwas.py` — local, on downloaded sumstats — and the write-up.
+**THE PIPELINE IS COMPLETE THROUGH STEP 8, AND THE FIGURES ARE MADE (2026-08-21).** Steps 0–8 have
+all run on the four-callset cohort and `review/plot_gwas.py` has produced all 17 viable-contrast
+figures. What is left is the write-up: `METHODS.md` is drafted, the slide deck is not.
 
 | | |
 |---|---|
@@ -287,8 +213,8 @@ blocks anything.
 | callset-skew columns (issue 10) | **added 2026-08-21, NOT YET RUN** — §13 emits them; needs `analysis_grain.py` before any step-7 rerun |
 | 7 GWAS | **done + RUN 2026-08-21** — job 28004190, 44/44 ran, λ 1.0175–1.0549 |
 | 8 ctrl-vs-ctrl | **done + RUN 2026-08-21** — job 28037485. APOE + HLA-DQB1 flagged = screening asymmetry, see known issue 2 |
-| `review/plot_gwas.py` | **NEXT ACTION** — runs locally on downloaded sumstats |
-| write-up | after that. `PROJECT_LOG.md`'s top block lists the two headline results |
+| `review/plot_gwas.py` | **done 2026-08-21** — 17 viable contrasts. scipy λ matches step 7's awk λ to 3 dp on every one |
+| write-up | **`METHODS.md` drafted 2026-08-21.** Slide deck outstanding |
 
 **Running it from here costs less than the old pass 2 did.** Stage A's inputs (`cohort_merged`,
 the step-5 manifest, the locked thresholds) have not changed, so job 27602590's output *is* stage

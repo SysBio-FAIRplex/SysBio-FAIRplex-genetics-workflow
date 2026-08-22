@@ -6,19 +6,25 @@ This pipeline processes whole genome sequencing (WGS) data from multiple cohorts
 harmonized GRCh38 format for ancestry prediction, sample and variant QC, and GWAS. The analysis it
 feeds is **AD vs PD across AMP-AD and AMP-PD, with AD defined by neuropathology**.
 
-**This file is the infrastructure reference: what the tools are, where files live, and which
-gotchas bite.** It deliberately does not carry project state. Four documents, one job each:
+**This file is the reference: what the tools are, where files live, in what order they run, and
+which gotchas bite.** It does not carry project state or scientific rationale — those have their
+own homes. One job each:
 
 | doc | answers |
 |---|---|
-| `README.md` (this file) | how the machine is set up and where things live |
-| `HANDOFF.md` | **what is true now** — run order, status, open issues. Start here. |
-| `PROJECT_LOG.md` | what we did, why, and what was ruled out. Append-only. |
+| `README.md` (this file) | what the pieces are, where files live, and **in what order things run** |
+| `METHODS.md` | **why** each choice was made — draft methods section for the paper |
+| `HANDOFF.md` | what is true right now: status and open issues |
+| `PROJECT_LOG.md` | what we did and what was ruled out. Append-only; grep it before investigating |
 | `RUNLOG.md` | which jobs ran and how they ended. Generated: `bash scripts/runlog.sh --md > RUNLOG.md` |
+| `wgs_core.ipynb` | the **executable** run order — it runs on biowulf and submits every step |
 
 **One root.** Code and data share a root — on biowulf `/data/CARDPB2/sysbio/wgs`, on a laptop
 wherever the repo was cloned. Nothing in the project holds an absolute path: `config.sh` derives
 the root from its own location, and `clinical_common.py` does the same. To move it, copy the folder.
+
+**Code reaches the cluster by `git pull`.** There is a remote as of 2026-08-21. Do not rsync code:
+`rsync` without `--delete` cannot express a deletion, which caused three stale-artifact bugs.
 
 ---
 
@@ -128,10 +134,10 @@ the root from its own location, and `clinical_common.py` does the same. To move 
   scripts/                                           ← see Scripts below
     logs/                                            ← all sbatch .o/.e files
   ref/                                               ← ships with the code: highld BED, refFlat
-  README.md   HANDOFF.md   PROJECT_LOG.md   RUNLOG.md
+  README.md   METHODS.md   HANDOFF.md   PROJECT_LOG.md   RUNLOG.md
   config.sh   submit.sh
   clinical_common.py   clinical_core.py   analysis_grain.py
-  wgs_core.ipynb                                     ← the orchestrator notebook
+  wgs_core.ipynb                                     ← the orchestrator; runs ON biowulf
 ```
 
 ---
@@ -160,7 +166,6 @@ pairs) were consolidated into these and no longer exist.
 ```
 scripts/
   # ── the pipeline, in order ────────────────────────────────────────────────
-  00_setup_env.sh              ← venv + GenoTools install
   01_genotools.sh              ← per callset: sex update -> filter -> bed -> ancestry + QC
   02_normalize.sh              ← per callset: chr naming + variant IDs, to a common convention
   03_merge.sh                  ← plink1.9 union merge of all four -> cohort_merged
@@ -178,18 +183,25 @@ scripts/
   af_concordance_build.{py,sh} ← stage B. The .sh is a wrapper for re-tuning knobs only.
   ancestry_qc_manifest.py      ← stage E. retained_samples_manifest.csv, once per generation.
 
-  # ── read-only diagnostics ─────────────────────────────────────────────────
-  diag_order.py                ← variant order vs the reference panel. RUN THIS on any new
-                                 callset before trusting its ancestry output (see gotchas).
-  gene_annot.py                ← locus coordinates from ref/refFlat.txt
-  genotools_capped.py          ← GenoTools entry point that respects the allocation
+  # ── tier 2, preflight (see Run order) ─────────────────────────────────────
+  00_setup_env.sh              ← venv + GenoTools install
+  diag_order.py                ← variant order vs the reference panel. MANDATORY on any callset
+                                 not already cleared, before step 1. Read-only.
+  hooks-pre-commit             ← install into .git/hooks/ after a clone
+
+  # ── tier 3, on demand ─────────────────────────────────────────────────────
+  gene_annot.py                ← what gene is this variant in; locus coordinates from ref/refFlat.txt
   runlog.sh                    ← regenerates RUNLOG.md from the SLURM accounting log
   nb_guard.py                  ← refuses to commit a notebook carrying stored outputs
 
-review/                        ← runs locally on downloaded outputs; no cluster, no genotypes
+  # ── called by step 1, not run directly ────────────────────────────────────
+  genotools_capped.py          ← GenoTools entry point that respects the SLURM allocation
+
+review/                        ← figures. Run on the cluster against outputs in place (the
+                                 sumstats are ~23 GB); pull the PNGs down, not the inputs.
   plot_af_filter_effect.py     ← the AF-filter before/after proof figure + eta^2 tables
   plot_pcs_by_callset.py       ← PC scatter by callset + eta^2 per PC per stratum
-  plot_gwas.py                 ← QQ + Manhattan
+  plot_gwas.py                 ← QQ + Manhattan, with lambda_GC cross-checked against step 7's
 ```
 
 The clinical side is three files at the project root:
@@ -207,25 +219,63 @@ already consumed.
 
 ---
 
-## Pipeline Order
+## Run order
 
-**The authoritative, copy-pasteable run order is the "Run order" section of `HANDOFF.md`** —
-it carries the exact `--export=` arguments and stays with the current state. It is not duplicated
-here, because two copies of a run order is how the wrong one gets followed.
+Everything is grouped by **when it runs and what triggers it**, not by what it is allowed to do.
+The distinction matters: `diag_order.py` used to be filed under "read-only diagnostics" alongside
+postmortem tools, which made a mandatory gate look optional — and skipping it is exactly how all 97
+BR-DSNWGS samples came back mislabelled with a clean exit and 0.97 nominal model accuracy.
 
-The shape:
+`wgs_core.ipynb` is the executable copy of tier 1 and runs on biowulf. This section is the map.
+
+### Tier 1 — the pipeline. Runs every time, in this order.
 
 ```
-clinical_core.py                     §1-10 sex files, §12a sample_annot.csv
-  -> 01 genotools (x4)  ->  02 normalize (x4)  ->  03 merge  ->  04 relatedness  ->  05 excludelist
-  -> 06 ancestry QC + PCA            ONE submission, five stages
-analysis_grain.py                    §11-13, on step 6's PCs
-  -> 07 gwas  ->  08 ctrl-vs-ctrl  ->  review/ plots
+clinical_core.py                §1-10 sex files, §12a sample_annot.csv   (cluster only)
+  01 genotools   (x4)           sex update -> filter -> bed -> ancestry + QC
+  02 normalize   (x4)           chr naming + variant IDs to a common convention
+  03 merge                      plink1.9 union of all four -> cohort_merged
+  04 relatedness                KING, report-only
+  05 excludelist                duplicates, relatives, QC fails -> retained_manifest.csv
+  06 ancestry QC                ONE submission, five stages:
+                                  A unfiltered QC+PCA   B build the AF exclusion list from A
+                                  C apply it            D filtered QC+PCA
+                                  E both sample manifests
+analysis_grain.py               §11-13 on step 6's PCs                   (cluster only)
+  07 gwas                       plink2 --glm per ancestry per contrast
+  review/plot_gwas.py           QQ + Manhattan
+  08 ctrl-vs-ctrl               annotates; never subtracts
 ```
 
-`clinical_core.py` and `analysis_grain.py` run **on the cluster only** — the two machines hold
-different clinical inputs, and a laptop run silently produces a smaller, wrong table. See
-`HANDOFF.md` known issue 4 for the specific file-count trap.
+Two hard prerequisites, both of which fail loudly rather than silently:
+
+- **`analysis_grain.py` must run before any step-7 run.** A `contrasts.csv` predating 2026-08-21
+  carries no callset-skew columns and step 7 exits 3 naming the missing one. Rerun the grain; do
+  not patch the CSV.
+- **`clinical_core.py` and `analysis_grain.py` run on the CLUSTER ONLY.** The two machines hold
+  different clinical inputs and a laptop run silently produces a smaller, wrong table. See
+  `HANDOFF.md` known issue 4.
+
+`review/plot_af_filter_effect.py` runs after step 6, off the two manifests that step wrote.
+
+### Tier 2 — preflight. Runs when a precondition changed, not every time.
+
+| check | trigger | if it fails |
+|---|---|---|
+| `bash scripts/00_setup_env.sh` | new machine, or a fresh clone with no `.venv` | nothing else will run |
+| `cp scripts/hooks-pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit` | fresh clone | notebook outputs can reach git; one already carried a subject-level table |
+| `python3 scripts/diag_order.py <panel>.bim <callset>.pvar` | **any callset not already cleared, BEFORE step 1** | non-zero rank drops -> add `--sort-vars` at import, or ancestry output is garbage that exits 0 |
+
+`wgs_harm`, `divco_hs`, `wb_dwgs` and `br_dsnwgs` have all been cleared. A fifth callset has not.
+
+### Tier 3 — on demand. No position in the sequence.
+
+| tool | use |
+|---|---|
+| `python3 scripts/gene_annot.py --at chr19:44908684` | what gene does this variant sit in — this is what named APOE and HLA-DQB1 in step 8's results |
+| `python3 scripts/gene_annot.py CR1 SNCA LRRK2` | gene coordinates, optionally `--flank` |
+| `bash scripts/runlog.sh --md > RUNLOG.md` | regenerate the job table from SLURM accounting |
+| `python3 scripts/nb_guard.py --staged` | what the pre-commit hook runs; `--strip <nb>` to clean one |
 
 ---
 
