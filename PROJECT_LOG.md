@@ -8,9 +8,11 @@ Three documents, one job each. Keep them apart:
 
 | doc | answers | written by |
 |---|---|---|
-| `HANDOFF.md` | what is true now | rewritten in place |
+| `README.md` | what the pieces are and in what order they run | rewritten in place |
+| `METHODS.md` | why each choice was made | rewritten in place |
+| `HANDOFF.md` | what is true now: status and open issues | rewritten in place |
 | `RUNLOG.md` | which jobs ran, and how they ended | generated — `bash scripts/runlog.sh --md > RUNLOG.md` |
-| `PROJECT_LOG.md` (this file) | what we did, why, and what we learned | appended |
+| `PROJECT_LOG.md` (this file) | what we did, why, and what we ruled out | appended |
 
 Entry format: date, a one-line title, then whichever of **Did / Found / Changed / Next**
 apply. Record dead ends explicitly — they are the point.
@@ -20,12 +22,44 @@ rewritten. Everything below it is append-only history.
 
 ---
 
+## Resolved-anomaly index
+
+**Grep this table before investigating anything.** Every row is a symptom that was already chased
+to a verdict; re-deriving one is the most expensive failure mode in this project. Search by locus,
+number, or symptom, then read the dated entry.
+
+| symptom | verdict | entry |
+|---|---|---|
+| CR1 `chr1:207521012:T:C` excluded by 6a | correct — `divco_hs` calls it in **156 of 242 alleles** (64.5%) while the same samples are 242/242 at the LRRK2 site. Site-specific dropout, not a frequency difference. Passes HWE in all three testable callsets | 2026-08-20 (later) |
+| LRRK2 `chr12:40227079:C:T` excluded by 6a | **wrong, and un-excluded by the HWE gate.** Never flagged on frequency (max spread 0.034 < 0.05); excluded on one chance-level HWE hit in AJ/`wb_dwgs`, while the same callset with 3,064 EUR controls passes | 2026-08-20 (later), (night, later) |
+| all 97 BR-DSNWGS samples labelled CAH, 0.97 model accuracy, exit 0 | variant ORDER mismatch. GenoTools aligns to the panel by column POSITION; BR's pgen was `1,10,11,…,2,20` from alphabetical concatenation. Fixed with `--sort-vars` | 2026-08-14, 2026-08-12 |
+| genotools dies with a bare SLURM `ExitCode 1:0`, no OOM, no MaxRSS | worker pool sized from the NODE, not the allocation; `RLIMIT_NPROC` 1024 is per-user node-wide. **64 workers still fails**; 16 completes. Not thread env vars — those were superstition | 2026-08-12 (three entries) |
+| eta² of 0.748 attributed to AJ | **EUR's baseline, mislabelled.** Today's EUR is 0.757 (within 0.009); AJ is 0.984 (off by 0.236). The `diag_af_crossstratum` script it was cited from exists in no commit | 2026-08-19 (premise), 2026-08-20 (later) |
+| "~748 duplicate genomes" | never a genotype-duplicate count — it is the **enrollment** overlap (846 donors in >1 cohort, 748 DivCo↔ROSMAP). 309 have >1 genome; KING finds 302 clusters; 319 dropped | 2026-08-18, 2026-08-17 |
+| every BR-DSNWGS sample reads 50% missing | expected at `--geno 0.05`: BR is 97/13,334 = 0.0073 of the cohort, so every variant it lacks stayed in the common set. `COMMON_GENO=0.005` fixes it. Step 5 had been consuming it as a duplicate tie-break | 2026-08-16, 2026-08-17 |
+| step 6 pass 1 was not an unfiltered baseline | a 4,587-variant `exclude_af_concordance.txt` from 2026-07-28 existed **only on the cluster** and was silently applied. Local absence ≠ cluster absence | 2026-08-17 |
+| AJ PC1 eta² 0.984, barely moved by the filter (→0.962) | **open, and the AF filter cannot fix it.** No AJ cell was ever evaluated: 6a needs TWO callsets above `MIN_CELL=100` in one cell, and AJ's best is `AJ/control` at `wb_dwgs=638` but `wgs_harm=44`. So the list holds no AJ-derived flags and EUR-derived ones do not transfer. AJ also shows no HWE excess (0.24× chance). Leading hypothesis: real sub-continental structure. Closed on power and design, not on eta² | 2026-08-19 (6a ran clean), (premise) |
+| AAC eta² 0.877, AFR 0.708 | **one BR sample each**, at 39.7σ and 19.6σ. Remove that point and they fall to 0.016 and 0.121. No AAC/AFR contrast is viable, so neither PC reaches a GWAS | 2026-08-19, 2026-08-18 |
+| APOE reaches significance in the control-vs-control scan | **expected, not an artifact.** The control arms are differentially screened — AMP-AD as cognitively normal, AMP-PD for PD and not AD. Subtracting would delete ε4 at P=3.55e-15 from the study's cleanest AD contrast | 2026-08-21 (step 8) |
+| `EUR PD_vs_DLB` is `within_cohort` (Δ=0.0) yet lost 353,068 variants to differential missingness | `confound_tag` measures PROGRAM and pools `wb_dwgs` with `br_dsnwgs`. BR contributes **no DLB at all** and sits at ~50% missingness. `n_diffmiss_excluded` is the signal; one-sidedness alone fires on 5 of 5 and predicts nothing | 2026-08-21 (step 7) |
+| 245 of 279 sentinel-window exclusions are MHC | per-variant technical: the two natively-called callsets agree near 0 while the lifted one does not (`chr6:32474706` 0.008/0.005 vs 0.207–0.213). Licenses deletion under 6a. The flag RATE is a methods number, not a decision input | 2026-08-20 (night, MHC) |
+| the `--assoc` swap flagged one variant fewer than the Python test | `.assoc` prints CHISQ to four SIGNIFICANT figures, so 25.005 lands as "25" and `25.0 > 25` is false. Threshold on **P**, which is exponential and ~1000× finer at the boundary. Cost exactly `chr6:32555808:T:C` | 2026-08-20 (later still), (evening) |
+| a bare `plink2` dies with PermissionError mid-job | on biowulf `plink` and `plink2` are one module family: loading plink/1.9 UNLOADS plink/6-alpha. Call both by absolute path | 2026-08-20 (later still) |
+| `07_gwas.sh` put BR-DSNWGS on the AMP-AD side | found 2026-08-11, fixed since — `AMPPD_CALLSETS = {wb_dwgs, br_dsnwgs}` | 2026-08-11 |
+| `clinical_core_out/` missing on the cluster | it had never been pushed | 2026-08-11 |
+| the sentinel tripwire | **deleted 2026-08-20, both call sites.** It gated nothing (stage C applies the list later in the same job) and its 9-gene scope made both its positive and negative results uninformative. Do not reintroduce | 2026-08-20 (night), (evening) |
+| `review/mask_cohort_artifacts.py`, `diag_cah.sh`, `diag_threads.py`, `compare_pcs.py` | **deleted 2026-08-21.** Reasons per file in that entry | 2026-08-21 (git remote) |
+| subject-level data in git | one notebook carried 18 stored outputs, one of them an `individual_id` × callset table. Scrubbed from history before the first push; `scripts/nb_guard.py` now blocks it | 2026-08-21 (git remote) |
+
+---
+
 ## Where we are right now
 
-**The pipeline is COMPLETE through step 8, on real data, as of 2026-08-21.** Steps 0–8 have all run
-to completion on the four-callset cohort. What remains is `review/plot_gwas.py` (local, on downloaded
-sumstats) and the write-up. Read `HANDOFF.md` for run order, paths and the ten known issues; this
-block is the short version of where things stand and what is still open.
+**The pipeline is COMPLETE through step 8 and the figures are made, as of 2026-08-21.** Steps 0–8
+have all run to completion on the four-callset cohort, and `review/plot_gwas.py` has produced QQ +
+Manhattan for all 17 viable contrasts (scipy λ matches step 7's awk λ to 3 dp on every one). What
+remains is the write-up: `METHODS.md` is drafted, the slide deck is not. Read `README.md` for the
+run order and `HANDOFF.md` for status and open issues; this block is the short version.
 
 ### The chain that ran
 
