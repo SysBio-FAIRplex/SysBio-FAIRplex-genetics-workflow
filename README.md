@@ -202,6 +202,10 @@ review/                        ← figures. Run on the cluster against outputs i
   plot_af_filter_effect.py     ← the AF-filter before/after proof figure + eta^2 tables
   plot_pcs_by_callset.py       ← PC scatter by callset + eta^2 per PC per stratum
   plot_gwas.py                 ← QQ + Manhattan, with lambda_GC cross-checked against step 7's
+  methods_numbers.py           ← re-derives every number in METHODS.md from the artifacts and
+                                 diffs it against the doc. Read-only. Run it before any write-up
+                                 edit; --strict to fail on anything it could not check.
+                                 --discordance measures §6.4's duplicate-pair enrichment (cluster).
 ```
 
 The clinical side is three files at the project root:
@@ -254,7 +258,7 @@ Two hard prerequisites, both of which fail loudly rather than silently:
   not patch the CSV.
 - **`clinical_core.py` and `analysis_grain.py` run on the CLUSTER ONLY.** The two machines hold
   different clinical inputs and a laptop run silently produces a smaller, wrong table. See
-  `HANDOFF.md` known issue 4.
+  `HANDOFF.md` open issue 1.
 
 `review/plot_af_filter_effect.py` runs after step 6, off the two manifests that step wrote.
 

@@ -75,11 +75,14 @@ directories, passed, and was wrong.
 
 - **Hand cluster commands to the user; do not ssh.** They run them and paste back.
 - Hosts are FQDNs: `helix.nih.gov` (transfers), `biowulf.nih.gov` (compute). No ssh alias exists.
-- Code reaches the cluster by `rsync`, not `git pull` — there is no remote. **Two rsyncs**: the
-  clinical files live at the project root, not under `scripts/`.
-- `rsync` without `--delete` cannot express a deletion. Retired scripts must be removed by hand;
-  that has caused three stale-artifact bugs. **Local absence ≠ cluster absence.**
-- Never rsync `clinical_core_out/` upward — the laptop's `analysis_grain.csv` is stale and wrong.
+- **Code reaches the cluster by `git pull`, never `rsync`.** The remote
+  (`SysBio-FAIRplex/amp-ad-pd-wgs-gwas`, private) was created 2026-08-21 and retired the two-rsync
+  dance. `rsync` without `--delete` cannot express a deletion, so retired scripts had to be removed
+  by hand and three stale-artifact bugs came of it; git expresses deletions. **Local absence still
+  ≠ cluster absence** for anything predating the remote, and for `results/` and
+  `clinical_core_out/`, which stay gitignored.
+- Never copy `clinical_core_out/` upward by any means — the laptop's `analysis_grain.csv` is stale
+  and wrong (11,918 rows against the cluster's correct 12,495).
 - Both clinical scripts (`clinical_core.py`, `analysis_grain.py`) are **cluster-only**; the laptop
   holds different clinical inputs and silently produces a smaller, wrong table.
 - Python on the cluster is `module load python/3.11 && source .venv/bin/activate`. The system

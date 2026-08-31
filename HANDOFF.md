@@ -42,6 +42,7 @@ or `joint_calls/`.
 | `scripts/gene_annot.py` + `ref/refFlat.txt` | the single source of locus coordinates; a read-only CLI with no pipeline callers. `--at chr19:44908684` |
 | `scripts/diag_order.py` | read-only **preflight gate** — variant order vs the reference panel, before step 1 on any uncleared callset. |
 | `review/` | QQ/Manhattan, eta² of callset on each PC, the AF-filter before/after. Runs on the cluster against outputs in place. |
+| `review/methods_numbers.py` | re-derives every numeric claim in `METHODS.md` from the artifacts and diffs it against the doc. Read-only. Seven checks need cluster files and report `????` on a laptop. |
 | `data/**/metadata/` | the 11 clinical files `clinical_core.py` opens. Gitignored — controlled access. |
 
 ## Run order
@@ -59,8 +60,11 @@ Code reaches the cluster by `git pull` (remote added 2026-08-21), never rsync.
 
 ## Status
 
-**COMPLETE through step 8, figures made, as of 2026-08-21.** What remains is the write-up:
-`METHODS.md` is drafted; the slide deck is not.
+**COMPLETE through step 8, figures made, as of 2026-08-21.** What remains is the write-up.
+`METHODS.md` is drafted and its numbers are now derived rather than transcribed — run
+`python3 review/methods_numbers.py`. A slide deck exists (`ad_pd_wgs_gwas_methods.pptx`, untracked)
+and is unreviewed. Of the 14 write-up flags it raised, 9 are closed (`PROJECT_LOG.md` 2026-08-24);
+the rest are open issues 6, 8 and 9 below.
 
 | | |
 |---|---|
@@ -77,9 +81,11 @@ gate on (2026-08-20 21:37) producing 4,187 and regenerating stages C/D/E. **That
 manifests are the live ones.** *(Its job ID is not recorded here — recover it from
 `bash scripts/runlog.sh --md`.)*
 
-**The two headline results.** The AF-concordance filter takes EUR's callset eta² from 0.757 to
-0.036 by excluding 0.058% of its variants; and step 8's annotate-never-subtract licence is what kept
-APOE-ε4 (P=3.55e-15) in the association set. Both are written up in `METHODS.md` §6 and §8.
+**The two headline results.** The AF-concordance filter takes EUR's callset eta² from 0.757 (PC2)
+to 0.036 (PC6) by excluding 4,187 of EUR's 7,538,809 post-QC variants — 0.06%; and step 8's
+annotate-never-subtract licence is what kept APOE-ε4 (P=3.55e-15) in the association set. Both are
+written up in `METHODS.md` §6 and §8. `python3 review/methods_numbers.py` re-derives both from the
+artifacts.
 
 ### Per-callset state
 
@@ -178,6 +184,30 @@ True now, and a run breaks if any of them changes. Not open work.
 
 7. **Step 0 (VCF→pgen for BR-DSNWGS) has no script.** It ran as notebook cells; `wgs_core.ipynb` §1
    is the whole record.
+
+8. **Seven `METHODS.md` numbers can only be settled on the cluster.** Run
+   `python3 review/methods_numbers.py --strict` there; on a laptop those seven report `????` and the
+   rest come back clean. Each one is read-only, and the script names the file it could not open:
+
+   | what it settles | source it needs |
+   |---|---|
+   | the **94-genome gap** between §1's table (13,428) and §3's merge (13,334), per callset | the `.fam` files named in `merge_list.txt` |
+   | §6.4's **exact** excluded share of EUR variants — every doc now says 0.06%, sourced but rounded | `by_ancestry_qc/unfiltered/cohort_EUR_qc.bim` vs the stage-C bim |
+   | the live exclusion list is 4,187 | `exclude_af_concordance.txt` |
+   | **§6.3's gate table omits EUR `divco_hs`** — evaluated and below the bar, or never evaluated for want of controls? Silence is not an answer | the cluster `analysis_grain.csv`; the laptop's stale 11,918-row copy is refused by name |
+   | the **step-6 job ID** behind the live 4,187 list, which every §6 number traces to | `bash scripts/runlog.sh --md` |
+
+   Nothing here is a pipeline defect. They are write-up provenance, and they block the paper, not a
+   run.
+
+9. **§6.4's "~7× enriched for duplicate-pair discordance" is unsourced — measure it or delete it.**
+   It is the only *non-circular* evidence that the 4,187 flagged variants are technical rather than
+   real; every other §6 number is measured on the same frequency signal the filter was built from.
+   No numerator, denominator, pair count, script or job ID exists anywhere in the repo.
+   `python3 review/methods_numbers.py --discordance` computes it on the cluster (`plink2
+   --sample-diff` over the KING duplicate pairs at kinship ≥ 0.354, flagged sites vs the rest).
+   **If it cannot be run, the sentence comes out of §6.4** — an unsourced multiplier carrying the
+   filter's whole justification is worse than no sentence.
 
 **Closed since 2026-08-19**, all with their reasoning in `PROJECT_LOG.md`'s index: the pheno/covar
 duplication (§13 is the sole definition), the ctrl-vs-ctrl duplication (`review/mask_cohort_artifacts.py`

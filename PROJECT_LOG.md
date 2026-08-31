@@ -50,6 +50,9 @@ number, or symptom, then read the dated entry.
 | the sentinel tripwire | **deleted 2026-08-20, both call sites.** It gated nothing (stage C applies the list later in the same job) and its 9-gene scope made both its positive and negative results uninformative. Do not reintroduce | 2026-08-20 (night), (evening) |
 | `review/mask_cohort_artifacts.py`, `diag_cah.sh`, `diag_threads.py`, `compare_pcs.py` | **deleted 2026-08-21.** Reasons per file in that entry | 2026-08-21 (git remote) |
 | subject-level data in git | one notebook carried 18 stored outputs, one of them an `individual_id` × callset table. Scrubbed from history before the first push; `scripts/nb_guard.py` now blocks it | 2026-08-21 (git remote) |
+| three AJ contrasts report `lambda_gc` exactly **0.0000** | **non-convergence, not deflation.** `AD_vs_DLB`, `PD_vs_AD` and `control_amppd_vs_control_ampad` are AJ's cross-callset contrasts; every variant returns `ERRCODE=UNFINISHED` with *P* ≈ 1, so the median chi-square is ~0. AJ PC1 is η² 0.962 on callset and enters as a covariate, so a covariate separates the arms almost perfectly. All three are below the viability floor and none is reported | 2026-08-24 |
+| METHODS §10's "roughly six times any cross-program contrast" | **false as written.** EUR `PD_vs_AD` removed 387,207 to differential missingness, more than `PD_vs_DLB`'s 353,068, and was omitted from the comparison set. The mechanism argument is unaffected; only the multiplier failed. Rewritten as "largest within-program removal, same magnitude as the primary cross-program contrast" | 2026-08-24 |
+| METHODS §6.4's "0.058% of variants" vs PROJECT_LOG's "0.05%" | both are the same quantity with no stated denominator. 0.058% = 4,385 / 7,538,809, measured on the **ungated 4,415** list; the live gated list is 4,187. Both round to 0.06% of EUR's post-QC variants, which is now what every doc says | 2026-08-24 |
 
 ---
 
@@ -58,8 +61,10 @@ number, or symptom, then read the dated entry.
 **The pipeline is COMPLETE through step 8 and the figures are made, as of 2026-08-21.** Steps 0–8
 have all run to completion on the four-callset cohort, and `review/plot_gwas.py` has produced QQ +
 Manhattan for all 17 viable contrasts (scipy λ matches step 7's awk λ to 3 dp on every one). What
-remains is the write-up: `METHODS.md` is drafted, the slide deck is not. Read `README.md` for the
-run order and `HANDOFF.md` for status and open issues; this block is the short version.
+remains is the write-up. `METHODS.md` is drafted and, as of 2026-08-24, its numbers are derived by
+`review/methods_numbers.py` rather than transcribed; a slide deck exists and is unreviewed, and the
+14 flags it raised are 9 closed, the rest `HANDOFF.md` issues 6, 8 and 9. Read `README.md` for the run order
+and `HANDOFF.md` for status and open issues; this block is the short version.
 
 ### The chain that ran
 
@@ -78,8 +83,13 @@ their sample sizes. Only EUR and AJ field viable contrasts.
 ### The two results that matter
 
 **1. The AF-concordance filter works, and it is measured on the live list.** Applying the
-4,187-variant exclusion takes EUR's worst callset eta² from **0.757 → 0.036 (95.3%)** by removing
-0.05% of its variants. The HWE excess-over-chance gate cost this nothing — the ungated 4,415 list
+4,187-variant exclusion takes EUR's worst callset eta² from **0.757 (PC2) → 0.036 (PC6), 95.3%** by
+removing **0.06% of EUR's 7,538,809 post-QC variants** — and the whole profile collapses, not just
+the peak: all ten PCs land at or below 0.036 and PC2 itself falls to 0.011. (The "0.058%" quoted
+before 2026-08-24 was measured on the *ungated* 4,415 list, where 4,385 of them were present in
+EUR: 7,538,809 → 7,534,424. Both round to 0.06%; the exact gated figure is the one
+`review/methods_numbers.py` derives on the cluster.) The HWE excess-over-chance gate cost this
+nothing — the ungated 4,415 list
 gave 0.036 / 95.2%, so the frequency channel carries the whole effect. Tables are versioned at
 `results/pca/af_filter_effect_gated4187*.csv`, the first files ever committed under `.gitignore`'s
 eta² negations. **AJ is NOT solved (0.984 → 0.962) and this filter cannot solve it** — no AJ cell was
@@ -101,21 +111,24 @@ known issue 2 and the 2026-08-21 entry below.
 
 ### Next, in order
 
-1. **`review/plot_gwas.py`** — runs locally on downloaded `.filtered.tsv` + `gwas_summary.csv`. Use
-   `.venv/bin/python`; the laptop's system python3 has pandas but no matplotlib.
-2. **Name two variants** for the write-up: `python3 scripts/gene_annot.py --at chr19:44912456 --at
+1. **Run `python3 review/methods_numbers.py` on biowulf.** It settles the seven checks a laptop
+   cannot, including the 94-genome gap and §6.4's exact denominator. Read-only.
+2. **Measure or delete §6.4's "~7× duplicate-pair discordance."** It is the only non-circular
+   evidence that the 4,187 flagged variants are technical, and it has no numerator, denominator or
+   job ID anywhere. `HANDOFF.md` issue 9.
+3. **Name two variants** for the write-up: `python3 scripts/gene_annot.py --at chr19:44912456 --at
    chr3:106666502`. The first decides whether the APOE signal is described as extending into APOC1;
    the second is the one ctrl-vs-ctrl hit with no AD/PD story and the only plausible true artifact.
-3. **Write-up.** The MHC flag-rate command in `HANDOFF.md` is a methods number, deliberately not a
+4. **Write-up.** The MHC flag-rate command in `HANDOFF.md` is a methods number, deliberately not a
    gate — see the 2026-08-20 decision entry.
 
 ### Open, and honestly open
 
 - **No age covariate**, and it cannot be forced: AMP-AD gives age at death, AMP-PD age at baseline.
-  The dominant confounder for both diseases. `HANDOFF.md` issue 9.
+  The dominant confounder for both diseases. `HANDOFF.md` issue 5.
 - **`confound_tag` measures program, not callset.** `within_cohort` is not a clean bill of health —
   `EUR PD_vs_DLB` wears it while losing 353,068 variants to differential missingness, because
-  BR-DSNWGS is 71 PD / 0 DLB at ~50% missingness. Annotated as of 2026-08-21; `HANDOFF.md` issue 10.
+  BR-DSNWGS is 71 PD / 0 DLB at ~50% missingness. Annotated as of 2026-08-21; `HANDOFF.md` issue 6.
 - **BR-DSNWGS contributes to ~half the association set** — a 97-donor joint call emits nothing at
   sites monomorphic in its own donors. Expected, but a methods limitation, and BR sits entirely on
   the AMP-PD side of the primary contrast.
@@ -154,6 +167,80 @@ known issue 2 and the 2026-08-21 entry below.
   drops. Enrollment overlap is a superset of sequencing overlap.
 - **Step 4's `COMMON_GENO=0.005` is load-bearing** — it must stay below the smallest callset's share
   of the cohort (BR is 97/13,334 = 0.0073). Re-check if a callset under ~0.5% is ever added.
+
+---
+
+## 2026-08-24 — the write-up numbers are now derived, not transcribed. `review/methods_numbers.py`. Three METHODS claims were wrong.
+
+**Did.** Worked `METHODS_FLAGS.md` — the 14 items raised while building the slide deck. (That file
+was a fourth doc competing with the three-doc split, and two of its items already existed as
+`HANDOFF.md` issues. Folded into `HANDOFF.md` issues 6, 8 and 9 and **deleted the same day**; its
+ground rules — do not invent a number, do not edit pipeline scripts, record fresh measurements in
+this log with their job ID — were followed and are worth keeping in mind.) Wrote
+`review/methods_numbers.py`, a read-only checker that re-derives every numeric claim in
+`METHODS.md` from the artifacts and diffs it against the value the doc asserts. On a laptop it reports **zero
+mismatches and seven checks it could not run**, all of which need cluster artifacts.
+Negative-tested by corrupting an asserted value and confirming it reports `FAIL`.
+
+**This is the real fix, and the flags were the symptom.** Every number in `METHODS.md` had been
+typed by hand from one of six artifacts. Nothing tied the doc to the files, so drift was invisible
+until someone summed a table. There is now one command that catches it:
+`python3 review/methods_numbers.py --strict`.
+
+**FOUND — three claims did not survive the derivation.**
+
+1. **§10's "roughly six times any genuinely cross-program contrast" is false.** EUR `PD_vs_AD` —
+   `cross_cohort`, and the primary contrast — removed **387,207** variants to differential
+   missingness, *more* than `PD_vs_DLB`'s 353,068, and had been silently omitted from the
+   comparison set. The mechanism argument is untouched; only the multiplier failed. Rewritten as
+   the sharper true statement: `PD_vs_DLB` is the largest removal of any *within-program* contrast
+   and sits at the same magnitude as the primary cross-program one **despite scoring Δ = 0.0**.
+2. **§6.3's HWE denominator was wrong.** "~1,540 of ~9,800 EUR samples" — 1,540 is exact
+   (`wgs_harm` membership in `results/retained_samples_manifest.csv`, counted by splitting the
+   pipe-joined `source_callset`), but EUR is **10,135**, as §5 and §6.4 both already said. 9,800
+   appears nowhere else in the repo.
+3. **§7's λ_GC 1.0175–1.0549 was quoted immediately after "44 contrasts ran"** and reads as
+   covering all 44. It covers the 17 viable. Now scoped, with the non-viable spread stated.
+
+**FOUND — why three AJ contrasts return λ_GC exactly 0.0000. Not previously logged.**
+`AJ AD_vs_DLB`, `AJ PD_vs_AD` and `AJ control_amppd_vs_control_ampad` are AJ's three *cross-callset*
+contrasts. Every variant in all three carries `ERRCODE=UNFINISHED` (100% of the first 300k rows in
+two of them; the third is `UNFINISHED` + `INVALID_RESULT`), with *P* ≈ 0.99996 — so the median
+chi-square is ~0 and λ collapses to 0. **The logistic model did not converge; the result is not
+deflated.** The cause is visible in §6.4: AJ's `AD` arm is 95/97 `wgs_harm` while the PD/DLB/AMP-PD
+control arms are ~96% `wb_dwgs`, and AJ PC1 is η² 0.962 on callset and enters as a covariate — so a
+covariate separates the arms almost perfectly. The contemporaneous AJ contrasts whose arms *share* a
+callset (`PD_vs_control`, etc.) come back `ERRCODE=.` and λ ≈ 1.03. All three λ = 0 contrasts are
+below the 100-per-arm floor and none is reported, so nothing downstream is affected. **This is the
+association-test face of the AJ collinearity that §6.4 and §10 already describe in PC space.**
+
+**RECONCILED — "0.058%" vs "0.05%", the same quantity in two docs, neither with a denominator.**
+0.058% = 4,385 / 7,538,809, and both halves belong to the **ungated 4,415** list: 4,385 is how many
+of it were present in EUR's post-QC set (the 2026-08-19 premise test, EUR 7,538,809 → 7,534,424).
+The live list is 4,187. Every doc now states the denominator and says **0.06% of EUR's 7,538,809
+post-QC variants**; `methods_numbers.py` derives the exact gated figure from
+`by_ancestry_qc/unfiltered/cohort_EUR_qc.bim` when run on the cluster.
+
+**Also written into §6.4, all from `af_filter_effect_gated4187{,_per_pc}.csv`, none of it new data.**
+The before/after cells are different components (PC2 → PC6) — worst-axis-before vs worst-axis-after,
+which is the right comparison but was left for the reader to notice. The table is a **maximum over
+PC1–PC10** and is upward-biased as such; now labelled. **The EUR result was understated:** before,
+four PCs carried structure (PC2 0.757, PC3 0.155, PC1 0.080, PC7 0.038); after, all ten sit at or
+below 0.036 and PC2 itself is 0.011 — the profile collapsed, the peak did not move. And η² is not
+interpretable to two decimals at *n* = 106–226: under a filter that only *removes* variants, CAH PC6
+rose 0.098 → 0.123 and AFR PC6 0.005 → 0.050. Noise, and now said to be.
+
+**Fixed stale cross-references** left by the 617 → 210 line `HANDOFF.md` cut: `README.md` cited
+"known issue 4" for the cluster-only clinical scripts (issue 1), and this file's top block cited
+issues 9 and 10 for the age covariate and `confound_tag` (5 and 6).
+
+**Next — the 7 checks that cannot run off a laptop.** Each is one read-only command on biowulf and
+`methods_numbers.py` reports the missing path for it. Two are load-bearing for the paper: the
+**94-genome gap** between §1's table (13,428) and §3's merge (13,334), which the `.fam` files named
+in `merge_list.txt` settle exactly; and **§6.4's "~7× enriched for duplicate-pair discordance"**,
+which is the only non-circular evidence that the 4,187 are technical and has no numerator,
+denominator or job ID anywhere. That one gets measured or deleted — it is not staying as an
+unsourced multiplier. `HANDOFF.md` issue 9.
 
 ---
 
