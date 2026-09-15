@@ -170,6 +170,57 @@ known issue 2 and the 2026-08-21 entry below.
 
 ---
 
+## 2026-09-15 — the sumstats release destination, recovered and now manifested: `gs://sysbio-gwas/results`
+
+**Did.** Recovered the release destination, which nothing in the repo had recorded, and wrote
+`SUMSTATS_MANIFEST.tsv` — 46 objects with size, CRC32C, MD5 where available, component count,
+generation and upload timestamp. `SUMSTATS_README.md` §Access now names the bucket.
+
+**Found — the upload is intact and matches the release doc exactly.**
+
+| | |
+|---|---|
+| destination | `gs://sysbio-gwas/results`, US-CENTRAL1 |
+| uploaded | **2026-08-25 02:51:40–02:52:09 UTC** — a 29-second window, so one `cp` invocation |
+| contents | 44 `.tsv` + `gwas_summary.csv` + `README.md` = 46 objects, 22.57 GiB |
+| doc vs bucket | the 44 contrasts in `SUMSTATS_README.md` and the 44 in the bucket are the **same 44** — no file in one and not the other |
+| access | uniform bucket-level access **on**, public access prevention **enforced**, no `allUsers` or `allAuthenticatedUsers` binding. Not public |
+
+**The bucket's `README.md` is byte-identical to the committed `SUMSTATS_README.md`** — 18,401 bytes,
+MD5 `5zYm+34zEwvN9kUaaXWGDw==`, matching `git show HEAD:SUMSTATS_README.md` exactly. That is the
+provenance link the push never wrote down: the release doc served to the browser is this repo's, at
+the state it was committed in. (Today's edit naming the bucket makes the local copy newer; re-upload
+it or accept the one-line drift.)
+
+**42 of 46 objects carry no MD5** — they were composite uploads (`Component-Count` 14–15, parallel
+chunked `cp`), and GCS does not compute MD5 for composite objects. CRC32C is present on all 46 and
+is what any integrity check has to use. Not a defect, but it means `gsutil cp -c` style MD5
+comparison will not work against these.
+
+**FOUND — the three non-converged AJ contrasts are visible in the file sizes, and they shipped.**
+Median `.tsv` is 531 MB. Two files are wild outliers:
+
+- `gwas_AJ_PD_vs_AD.filtered.tsv` — **10.9 MB, 2.1% of median**
+- `gwas_AJ_AD_vs_DLB.filtered.tsv` — **104 MB, 19.6% of median**
+- `gwas_AJ_control_amppd_vs_control_ampad.filtered.tsv` — 417 MB, the smallest full-size AJ file
+
+These are exactly the three λ_GC = 0.0000 contrasts from the 2026-08-24 entry. The mechanism is the
+release filter: rows are `ADD` only with |BETA| ≤ 5, and a Firth fit that returned
+`ERRCODE=UNFINISHED` mostly fails that bound, so the non-convergence shows up as **missing rows**
+rather than as a warning. The size ratio is an independent confirmation of the diagnosis, arrived at
+from the bucket rather than from the logs.
+
+**Consequence for the browser:** all three are in `gs://sysbio-gwas/results` and will render as
+selectable results. They are below the 100-per-arm floor and their λ is meaningless. They should be
+suppressed or labelled at the UI layer — the files themselves are correctly filtered, so nothing
+downstream flags them.
+
+**Still not recorded:** the exact `gcloud storage cp` command and the host it ran from. The 29-second
+window over 22.57 GiB implies a high-bandwidth source, i.e. biowulf or a GCP VM rather than the
+laptop, but that is inference and not a record.
+
+---
+
 ## 2026-08-24 — the write-up numbers are now derived, not transcribed. `review/methods_numbers.py`. Three METHODS claims were wrong.
 
 **Did.** Worked `METHODS_FLAGS.md` — the 14 items raised while building the slide deck. (That file

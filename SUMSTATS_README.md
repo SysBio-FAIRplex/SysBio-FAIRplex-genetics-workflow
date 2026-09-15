@@ -229,5 +229,7 @@ b37→hg38 on the merged file → `--chr 1-22,X,Y`. `divco_hs` and `br_dsnwgs`: 
 
 ## Access
 
+Released to **`gs://sysbio-gwas/results`**; the GWAS browser reads from there.
+
 Derived from AMP-AD (Synapse) and AMP-PD controlled-access data. Redistribution is governed by
 those data use agreements — confirm before widening bucket access.
