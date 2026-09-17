@@ -170,6 +170,56 @@ known issue 2 and the 2026-08-21 entry below.
 
 ---
 
+## 2026-09-17 (end of day) — the release split into two scripts. Step 9 no longer has a gcloud dependency, and the ALLOW_NO_HASH fallback is gone.
+
+**Did.** Split `09_amppd_release.sh` (MODE=build / MODE=push) into `09_amppd_subset.sh` and
+`10_amppd_push.sh`, at the user's request. One file, one host, one job.
+
+**This deleted a wart rather than just moving code.** The single script computed CRC32C at build
+time with `gcloud storage hash`, so a subset on a node without gcloud either failed or fell back to
+`ALLOW_NO_HASH=1` and a size-only check. That fallback was the weakest thing in the design: it let a
+release be produced whose content nothing had verified, behind a flag.
+
+Splitting made the right answer obvious. **Step 9 records size + SHA-256 from coreutils** — no
+network, no gcloud, no optional path. **Step 10 computes CRC32C at upload time**, where gcloud is
+present by definition, and compares it against the bucket. Each hash is now used where it is
+actually good:
+
+| hash | where | why |
+|---|---|---|
+| SHA-256 | shipped in `MANIFEST.tsv` | a consumer verifies it with `sha256sum` after download, no cloud tooling |
+| CRC32C | step 10, at verify | the only hash GCS stores, so the only one comparable without downloading the objects back. And GCS computes no MD5 for composite uploads — 42 of 46 sumstats objects, 2026-09-15 |
+
+`ALLOW_NO_HASH` is gone. A missing SHA-256 tool is now fatal in step 9, and an uncomputable CRC32C
+is a **verify failure** in step 10 rather than a warning — "size matched" is not the check this
+release is supposed to get.
+
+**FOUND while testing — two portability failures the script used to hit mid-run.** Running step 9
+under a deliberately minimal PATH exposed both:
+
+- `declare -A` is bash 4+. macOS ships bash 3.2, where it prints `declare: -A: invalid option` and
+  **continues**, leaving the per-stratum tally silently empty — so the sample accounting, the check
+  that exists to catch a partial release, would have read as passing on an empty tally. Now a
+  `BASH_VERSINFO` guard at the top, with the reason.
+- `sha256sum` does not exist on macOS (it is `shasum -a 256`). Added a fallback that tries both and
+  fails loudly if neither is present.
+
+Neither affects biowulf, which has bash 4+ and coreutils. Both are the same failure shape this
+project keeps meeting: **a check that cannot run must not look like one that passed.**
+
+**Tested: eight guards, all firing.** Step 9 — bash-3.2 refusal, staging-tree `OVERWRITE`, the
+accounting gap, the callset-name mismatch. Step 10 — missing `GCS_DEST`, non-private bucket,
+running inside SLURM, missing staging tree, object dropped in transit, **CRC32C mismatch**, and the
+bucket-side `OVERWRITE` guard. The success path verifies 8 objects and appends push provenance.
+
+**Changed.** `09_amppd_release.sh` deleted in the same commit that adds its two replacements —
+no unwired duplicate left behind (working rule 2). `README.md` tier 1b and `HANDOFF.md` issue 10
+updated; issue 10's gcloud item now says *helix*, not biowulf, since step 9 no longer needs it.
+
+**Still never run.** Both scripts are unexercised against real data.
+
+---
+
 ## 2026-09-17 (later still) — `HANDOFF.md` issue 3 was wrong in every particular. Five citations pointed at a README section that never existed.
 
 **Did.** Finished the cluster conversion and then checked issue 3, which had claimed for weeks that

@@ -180,9 +180,9 @@ scripts/
   08_ctrl_ctrl_filter.{py,sh}  ← control-vs-control artifact scan. ANNOTATES, never subtracts.
 
   # ── tier 1b, release. After step 8; not part of every run ─────────────────
-  09_amppd_release.sh          ← subset the AMP-PD donors out of step 6 stage C and publish them
-                                 to GCS. TWO MODES ON TWO HOSTS: MODE=build (sbatch, biowulf,
-                                 no network) then MODE=push (helix, uploads + verifies).
+  09_amppd_subset.sh           ← subset the AMP-PD donors out of step 6 stage C into a staging
+                                 tree. sbatch on BIOWULF. No network code in it at all.
+  10_amppd_push.sh             ← publish that tree to GCS. Runs on HELIX, not under sbatch.
 
   # ── called by step 6, not submitted directly ──────────────────────────────
   af_concordance_build.{py,sh} ← stage B. The .sh is a wrapper for re-tuning knobs only.
@@ -274,8 +274,8 @@ Two hard prerequisites, both of which fail loudly rather than silently:
 ### Tier 1b — release. Runs after step 8, when data is being handed to someone else.
 
 ```
-  09 amppd release              MODE=build   sbatch on BIOWULF   — subset + manifest, no network
-                                MODE=push    run on HELIX        — upload + verify
+  09 amppd subset               sbatch on BIOWULF  — subset + manifest. Never touches the network
+  10 amppd push                 run on HELIX       — upload + verify
 ```
 
 Not part of every run, and deliberately not renumbered into tier 1: it consumes the pipeline's
@@ -291,15 +291,19 @@ step 6 wrote — not a tool you reach for at an arbitrary moment.
 | not re-filtered | dropping the AMP-AD donors leaves some variants monomorphic within the subset; they stay. Re-applying `--maf` would produce a fileset that disagrees with the published sumstats. `SUBSET_MAF`/`SUBSET_GENO` opt in, and the release README says which was used |
 | destination | **no bucket is hardcoded.** `GCS_DEST` is required at push time |
 
-Two hosts, because biowulf compute nodes have no general outbound network — a push from one
-fails looking like an auth problem. `MODE=push` refuses to run inside a SLURM allocation.
+**Two scripts on two hosts, and the split is not cosmetic.** Biowulf compute nodes have no
+general outbound network, so a push from one fails looking like an auth problem; step 10 refuses
+to run inside a SLURM allocation. Keeping them separate also means step 9 has no gcloud
+dependency — it records size and SHA-256 with coreutils, which is the better pair to ship anyway
+since a consumer can check SHA-256 after download. CRC32C is what GCS stores, so step 10 computes
+it at upload time and compares against the bucket.
 
 ```bash
 # on biowulf
-./submit.sh scripts/09_amppd_release.sh
+./submit.sh scripts/09_amppd_subset.sh
 
-# then on helix.nih.gov, after the build reports "reconciled"
-MODE=push GCS_DEST=gs://<bucket>/<prefix> bash scripts/09_amppd_release.sh
+# then on helix.nih.gov, after step 9 reports "reconciled"
+GCS_DEST=gs://<bucket>/<prefix> bash scripts/10_amppd_push.sh
 ```
 
 **Three things it refuses to do, none of them overridable by a flag:**
@@ -317,9 +321,8 @@ MODE=push GCS_DEST=gs://<bucket>/<prefix> bash scripts/09_amppd_release.sh
   — the failure it misses is a file that was never in the argument list. Stage E re-lists the
   bucket and compares presence, size and CRC32C against `MANIFEST.tsv`.
 
-CRC32C rather than MD5: GCS computes no MD5 for composite (parallel-chunked) uploads, which is
-why 42 of the 46 objects in the sumstats release came back MD5-less (`PROJECT_LOG.md`
-2026-09-15).
+Not MD5 anywhere: GCS computes no MD5 for composite (parallel-chunked) uploads, which is why 42
+of the 46 objects in the sumstats release came back MD5-less (`PROJECT_LOG.md` 2026-09-15).
 
 ### Tier 2 — preflight. Runs when a precondition changed, not every time.
 
