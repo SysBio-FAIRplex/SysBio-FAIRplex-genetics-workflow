@@ -37,6 +37,7 @@ or `joint_calls/`.
 | `wgs_core.ipynb` | the orchestrator. **Runs ON biowulf** — direct sbatch, no ssh except to helix for transfers. |
 | `config.sh` | every path, derived from its own location. `submit.sh` — sbatch wrapper. |
 | `scripts/01`–`08` | genotools, normalize, merge, relatedness, excludelist, ancestry QC, GWAS, ctrl-vs-ctrl. |
+| `scripts/09_amppd_release.sh` | **release, not pipeline.** Subsets the AMP-PD donors out of step 6 stage C and publishes them to GCS. `MODE=build` on biowulf (sbatch, no network), then `MODE=push` on helix. Written 2026-09-17, **never run**. |
 | `scripts/af_concordance_build.{py,sh}` | step 6 **stage B**, in-job. The `.sh` is for re-tuning knobs only. |
 | `scripts/ancestry_qc_manifest.py` | step 6 stage E: `retained_samples_manifest.csv`, once per generation. |
 | `scripts/gene_annot.py` + `ref/refFlat.txt` | the single source of locus coordinates; a read-only CLI with no pipeline callers. `--at chr19:44908684` |
@@ -61,6 +62,8 @@ Code reaches the cluster by `git pull` (remote added 2026-08-21), never rsync.
 ## Status
 
 **COMPLETE through step 8, figures made, as of 2026-08-21.** What remains is the write-up.
+A release step (`scripts/09_amppd_release.sh`, 2026-09-17) exists for handing the AMP-PD subset
+to a bucket; it has **not been run**, so no genotype data has left the cluster — open issue 10.
 `METHODS.md` is drafted and its numbers are now derived rather than transcribed — run
 `python3 review/methods_numbers.py`. A slide deck exists (`ad_pd_wgs_gwas_methods.pptx`, untracked)
 and is unreviewed. Of the 14 write-up flags it raised, 9 are closed (`PROJECT_LOG.md` 2026-08-24);
@@ -208,6 +211,26 @@ True now, and a run breaks if any of them changes. Not open work.
    --sample-diff` over the KING duplicate pairs at kinship ≥ 0.354, flagged sites vs the rest).
    **If it cannot be run, the sentence comes out of §6.4** — an unsourced multiplier carrying the
    filter's whole justification is worse than no sentence.
+
+10. **`scripts/09_amppd_release.sh` has never been run, and two of its assumptions are
+    unverified on the cluster.** The script is written, syntax-checked, and exercised end-to-end
+    against a stubbed `plink2` — its selection, join, accounting and manifest logic all work, and
+    all three fatal guards fire. What a laptop cannot settle:
+
+    - **The gcloud module name on biowulf.** `MOD_GCLOUD` defaults to `google-cloud-sdk` and the
+      script falls back to whatever `gcloud` is already on `PATH`. If neither resolves, the build
+      exits 1 rather than writing a manifest with no CRC32C — `ALLOW_NO_HASH=1` accepts size-only
+      verification, which is a weaker check than this release should get. Settle it with
+      `module spider google-cloud-sdk` before the first build.
+    - **Whether every AMP-PD sample reconciles.** The build refuses to ship unless each one lands
+      in exactly one stratum fileset. AMP-PD donors in a stratum step 6 never wrote a fileset for
+      (the `PRUNE_FAIL`/sub-2-sample strata) would trip it. Nothing on the laptop can say whether
+      any exist, because the laptop's `analysis_grain.csv` is the stale 11,918-row one. The first
+      real build answers it in one line.
+
+    No bucket is hardcoded anywhere; `GCS_DEST` is required at push time. Redistribution of
+    individual-level AMP-PD genotypes is governed by the DUA — the script will not upload to a
+    bucket it cannot prove is private, and that refusal has no override flag.
 
 **Closed since 2026-08-19**, all with their reasoning in `PROJECT_LOG.md`'s index: the pheno/covar
 duplication (§13 is the sole definition), the ctrl-vs-ctrl duplication (`review/mask_cohort_artifacts.py`

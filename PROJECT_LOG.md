@@ -170,6 +170,122 @@ known issue 2 and the 2026-08-21 entry below.
 
 ---
 
+## 2026-09-17 — a release step for the AMP-PD subset: `scripts/09_amppd_release.sh`. Written, tested against a stub, NOT run.
+
+**Did.** Wrote step 9 — subset the AMP-PD donors out of the final QC'd association set and publish
+them to a GCS bucket. Documented it in `README.md` as **tier 1b, release**, and in `HANDOFF.md` as
+open issue 10. Nothing upstream changed; no pipeline artifact is read back by it.
+
+**What it ships, and why that fileset.** `data/merged/by_ancestry_qc/cohort_<ANC>_qc` — step 6
+**stage C**, post per-ancestry QC and post the AF-concordance exclusion list. That is the exact
+variant set step 7 tested, which is the whole reason it is the thing worth releasing. Deliberately
+not `cohort_merged` (pre-QC) and not `unfiltered/` (the baseline twin, which exists to measure the
+filter, not to be shipped).
+
+**One fileset per stratum, not one merged fileset.** The QC is per stratum, so each stratum has its
+own variant set; concatenating them would produce a fileset no GWAS in this study ran on. This was
+the choice put to the user and the one taken.
+
+**Not re-filtered after subsetting, and this is the decision most likely to be second-guessed.**
+Dropping the AMP-AD donors leaves some retained variants monomorphic or low-MAF within the AMP-PD
+subset. They stay. Re-applying `--maf`/`--geno` would yield a variant set that silently disagrees
+with the published sumstats — a released pgen and a released sumstat that do not describe the same
+variants is exactly the kind of drift `review/methods_numbers.py` was written to stop. `SUBSET_MAF`
+and `SUBSET_GENO` opt in, and the generated release README states which was used either way.
+
+**Who counts as AMP-PD: read, not re-derived.** `source_callset` in {`wb_dwgs`, `br_dsnwgs`}, taken
+**by header name** from step 6 stage E's `retained_samples_manifest.csv`. That file is already the
+one implementation of per-sample callset membership. Re-deriving it from the four genotools label
+files would have been a second one, which is the duplication rule, and it would have been the
+easier thing to write.
+
+**Two hosts, because one of them has no network.** `MODE=build` is an sbatch job on biowulf and
+never touches the network. `MODE=push` runs on helix and refuses to start inside a SLURM
+allocation — a push attempted from a compute node fails looking like an auth or bucket problem,
+which is an expensive misdiagnosis to walk into.
+
+**Three refusals, none of them overridable:**
+
+| refusal | the failure it exists for |
+|---|---|
+| partial release | every AMP-PD sample in the retained manifest must land in exactly one fileset. A stratum with AMP-PD donors but no step-6 fileset is a hole that looks *identical* to a clean run unless something counts. The check names the short strata |
+| unverified-private bucket | uniform bucket-level access on, public access prevention enforced, no `allUsers`/`allAuthenticatedUsers`. **If the IAM policy cannot be read, that is also a refusal** — absence of a public binding in a listing that failed is not evidence of absence (rule 3) |
+| unverified upload | `cp` exiting 0 does not prove every object arrived; the failure it misses is a file never in the argument list. Stage E re-lists the bucket and compares presence, size and CRC32C against `MANIFEST.tsv` |
+
+The bucket refusal has no flag on purpose. This is individual-level genotype data under the AMP-PD
+DUA, and that decision does not belong to a shell variable.
+
+**No bucket is hardcoded.** `GCS_DEST` is required at push time. The sumstats bucket
+(`gs://sysbio-gwas/results`, 2026-09-15 entry) holds aggregate statistics; this is a different data
+class and the destination is a deliberate choice each time.
+
+**CRC32C, not MD5** — carried straight from the 2026-09-15 finding that 42 of the 46 sumstats
+objects came back MD5-less because they were composite uploads. The build records CRC32C and
+SHA-256; stage E compares CRC32C. If `gcloud` cannot be found the build **exits 1** rather than
+writing a manifest with no hash — `ALLOW_NO_HASH=1` accepts size-only, and says plainly that size
+agreement is not content agreement.
+
+**Three parse bugs found and fixed before they could run.** The first two are rule-4 shaped:
+
+- The upload list was a brace-expanded glob (`amppd_*.{pgen,pvar,psam,bed,...}`). With `nullglob`
+  off, an unmatched pattern — `amppd_*.bed` on a pgen build — expands to a literal nonexistent path
+  that `gcloud` then errors on, and the glob would also have swept up the per-stratum `.plink.log`
+  files. Now built from `MANIFEST.tsv`, which is already the authoritative list.
+- Stage E parsed `gcloud storage ls -L` prose positionally. That output is human-facing, has
+  changed shape between `gsutil` and `gcloud storage`, and renders sizes as `12345 (12.05 KiB)` —
+  a positional read of which yields `KiB)`. Both it and the bucket preflight now read
+  `--json`/`--format=json` through a small python parser that looks its fields up **by name at any
+  depth**, so the camelCase/snake_case/`iamConfiguration`-nested variants gcloud has emitted across
+  releases all resolve. An empty listing after a successful `cp` is a loud failure, not
+  "everything missing".
+- **The third is the one worth remembering.** Both embedded python parsers are single-quoted shell
+  arguments, so they cannot contain a single quote — and the f-strings I wrote used `\"` to get
+  double quotes inside the expression, which is a `SyntaxError`. It survived my first test only
+  because the test harness unescaped the source before running it, i.e. **the test was not running
+  the code the script would run.** Caught by the stubbed push instead, where the preflight printed
+  a traceback and then reported all three checks as FAIL.
+
+  It failed **closed** — a broken parser yields empty values, empty values fail the check, and the
+  upload is refused. That is the right direction and it is not an accident; it is what "a check
+  that cannot run must say so loudly" buys you. But it would equally have refused a perfectly
+  configured bucket, and the traceback was the only thing distinguishing the two. Both parsers now
+  build their output by concatenation, with no f-string and no escaped quote anywhere in the file.
+
+**Tested against a stubbed `plink2` and a stubbed `gcloud`** — three mock strata, a mock manifest,
+AMP-PD in two of them. Nine cases, all passing:
+
+| # | case | result |
+|---|---|---|
+| 1 | staging tree exists, no `OVERWRITE` | refused |
+| 2 | AMP-PD sample in a stratum with no step-6 fileset | refused, `MDE manifest 1 shipped 0 gap 1` |
+| 3 | `AMPPD_CALLSETS` names a callset that does not exist | refused, **and prints the observed `source_callset` values** — that error is a name typo, not an empty cohort, and the distinction is the whole message |
+| 4 | bucket not private (UBLA off, PAP inherited, `allUsers` bound) | refused on all three |
+| 5 | private bucket, clean upload | preflight OK, 8 objects |
+| 6 | verify with matching CRC32C | success path |
+| 7 | one object never arrives | `MISSING in bucket`, object-count mismatch, refused |
+| 8 | push over an existing release, no `OVERWRITE` | refused |
+| 9 | `MODE=push` inside a SLURM allocation | refused, points at helix |
+
+Selection, the `.fam` join, the accounting arithmetic, the manifest and the generated README all
+work. The CRC32C hash parse was exercised against a **real** `gcloud storage hash`, and the four
+bucket-JSON shapes and four listing-JSON shapes against the fixed parsers directly.
+
+**Next — two things a laptop cannot settle, both in `HANDOFF.md` issue 10.**
+
+1. The gcloud module name on biowulf. `MOD_GCLOUD` defaults to `google-cloud-sdk`; confirm with
+   `module spider google-cloud-sdk` before the first build.
+2. Whether every AMP-PD sample reconciles. AMP-PD donors sitting in a stratum step 6 wrote no
+   fileset for would trip the accounting guard. Nothing local can say whether any exist — the
+   laptop's `analysis_grain.csv` is the stale 11,918-row one. The first real build answers it in
+   one line.
+
+**And when it is pushed: record the destination, object count, byte total, upload window and git
+commit here.** The previous release's exact `cp` command and host were never written down and had
+to be recovered by audit five weeks later (2026-09-15). The push stage prints exactly this list on
+success.
+
+---
+
 ## 2026-09-15 — the sumstats release destination, recovered and now manifested: `gs://sysbio-gwas/results`
 
 **Did.** Recovered the release destination, which nothing in the repo had recorded, and wrote

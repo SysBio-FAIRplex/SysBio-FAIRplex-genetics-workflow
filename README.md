@@ -179,6 +179,11 @@ scripts/
                                  contrasts.csv — it does NOT rebuild arms from the grain.
   08_ctrl_ctrl_filter.{py,sh}  ← control-vs-control artifact scan. ANNOTATES, never subtracts.
 
+  # ── tier 1b, release. After step 8; not part of every run ─────────────────
+  09_amppd_release.sh          ← subset the AMP-PD donors out of step 6 stage C and publish them
+                                 to GCS. TWO MODES ON TWO HOSTS: MODE=build (sbatch, biowulf,
+                                 no network) then MODE=push (helix, uploads + verifies).
+
   # ── called by step 6, not submitted directly ──────────────────────────────
   af_concordance_build.{py,sh} ← stage B. The .sh is a wrapper for re-tuning knobs only.
   ancestry_qc_manifest.py      ← stage E. retained_samples_manifest.csv, once per generation.
@@ -261,6 +266,56 @@ Two hard prerequisites, both of which fail loudly rather than silently:
   `HANDOFF.md` open issue 1.
 
 `review/plot_af_filter_effect.py` runs after step 6, off the two manifests that step wrote.
+
+### Tier 1b — release. Runs after step 8, when data is being handed to someone else.
+
+```
+  09 amppd release              MODE=build   sbatch on BIOWULF   — subset + manifest, no network
+                                MODE=push    run on HELIX        — upload + verify
+```
+
+Not part of every run, and deliberately not renumbered into tier 1: it consumes the pipeline's
+output and produces nothing the pipeline reads back. It is listed here rather than under tier 3
+because it is a **step in the data process with a fixed position** — after step 8, on artifacts
+step 6 wrote — not a tool you reach for at an arbitrary moment.
+
+| | |
+|---|---|
+| what it ships | `data/merged/by_ancestry_qc/cohort_<ANC>_qc` — step 6 **stage C**, the exact variant set step 7 tested — restricted to `source_callset` in {`wb_dwgs`, `br_dsnwgs`} |
+| shape | one fileset **per ancestry stratum**, because the QC is per stratum. Concatenating them would invent a variant set no GWAS in this study ran on |
+| who is AMP-PD | read by header name from step 6 stage E's `retained_samples_manifest.csv`. **Not** re-derived from the four genotools label files — `ancestry_qc_manifest.py` is the one implementation of callset membership |
+| not re-filtered | dropping the AMP-AD donors leaves some variants monomorphic within the subset; they stay. Re-applying `--maf` would produce a fileset that disagrees with the published sumstats. `SUBSET_MAF`/`SUBSET_GENO` opt in, and the release README says which was used |
+| destination | **no bucket is hardcoded.** `GCS_DEST` is required at push time |
+
+Two hosts, because biowulf compute nodes have no general outbound network — a push from one
+fails looking like an auth problem. `MODE=push` refuses to run inside a SLURM allocation.
+
+```bash
+# on biowulf
+./submit.sh scripts/09_amppd_release.sh
+
+# then on helix.nih.gov, after the build reports "reconciled"
+MODE=push GCS_DEST=gs://<bucket>/<prefix> bash scripts/09_amppd_release.sh
+```
+
+**Three things it refuses to do, none of them overridable by a flag:**
+
+- Ship a **partial** release. Every AMP-PD sample in the retained manifest must land in exactly
+  one released fileset; the reconciliation is fatal, and it names the strata that came up short.
+  A stratum with AMP-PD donors but no step-6 fileset is a hole, and it looks identical to a
+  clean run unless something counts.
+- Upload to a bucket it cannot **prove** is private — uniform bucket-level access on, public
+  access prevention enforced, no `allUsers`/`allAuthenticatedUsers` binding. If the IAM policy
+  cannot be read at all, that is a refusal too: absence of a public binding in a listing that
+  failed is not evidence of absence. There is no override, on purpose; this is individual-level
+  genotype data under the AMP-PD DUA and that decision does not belong to a shell variable.
+- Report success on an **unverified** upload. `cp` exiting 0 does not prove every object arrived
+  — the failure it misses is a file that was never in the argument list. Stage E re-lists the
+  bucket and compares presence, size and CRC32C against `MANIFEST.tsv`.
+
+CRC32C rather than MD5: GCS computes no MD5 for composite (parallel-chunked) uploads, which is
+why 42 of the 46 objects in the sumstats release came back MD5-less (`PROJECT_LOG.md`
+2026-09-15).
 
 ### Tier 2 — preflight. Runs when a precondition changed, not every time.
 
