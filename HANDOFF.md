@@ -57,13 +57,20 @@ Two prerequisites fail a whole run rather than a step:
   callset-skew columns and step 7 exits 3 naming the missing one. Rerun the grain, don't patch it.
 - **Both clinical scripts are cluster-only** — open issue 1.
 
-Code reaches the cluster by `git pull` (remote added 2026-08-21), never rsync.
+Code reaches the cluster by **git bundle** — there are no GitHub credentials on biowulf. See
+`CLAUDE.md` rule 5. (The cluster was **not a git checkout at all** until 2026-09-17, despite this
+line having claimed `git pull` since 2026-08-21; `PROJECT_LOG.md` 2026-09-17.)
 
 ## Status
 
 **COMPLETE through step 8, figures made, as of 2026-08-21.** What remains is the write-up.
 A release step (`scripts/09_amppd_release.sh`, 2026-09-17) exists for handing the AMP-PD subset
 to a bucket; it has **not been run**, so no genotype data has left the cluster — open issue 10.
+
+**The cluster became a git checkout on 2026-09-17** (it never was one before, despite the docs).
+Four files had drifted. Every step that produced the released results — 04, 06, 06a, 07, 08 — was
+verified **logic-identical** to the repo by AST comparison, so the 4,187 list, the association set
+and job 28004190 all ran the code in git. `METHODS.md` §6 and §8 stand. `PROJECT_LOG.md` 2026-09-17.
 `METHODS.md` is drafted and its numbers are now derived rather than transcribed — run
 `python3 review/methods_numbers.py`. A slide deck exists (`ad_pd_wgs_gwas_methods.pptx`, untracked)
 and is unreviewed. Of the 14 write-up flags it raised, 9 are closed (`PROJECT_LOG.md` 2026-08-24);
@@ -165,7 +172,9 @@ True now, and a run breaks if any of them changes. Not open work.
 
 3. **The cluster's `README.md` (30 KB) has not been merged in.** `06_ancestry_qc.sh` references that
    copy's §2 (reference-data acquisition) by number, and §2 is what the repo version lacks: nothing
-   here says how to obtain the reference panel or the liftover chain. Diff before trusting either.
+   here says how to obtain the reference panel or the liftover chain. **As of 2026-09-17 this is a
+   readable `git diff` rather than an assertion** — the cluster is a checkout and `README.md` is its
+   one modified file (backed up as `README.cluster.30k.bak`). Merge §2 in and the issue closes.
 
 4. **DivCo's source VCF is 0 bytes** on the cluster (`merged.deduped.vcf.gz`). The pgen was derived
    before it was truncated, so nothing is blocked, but DivCo cannot be re-derived from source
@@ -178,19 +187,27 @@ True now, and a run breaks if any of them changes. Not open work.
    which nothing currently does. Every run prints `age covariate: NOT FOUND in grain`.
    `METHODS.md` §10.
 
-6. **The callset-skew columns are emitted but have NOT been run.** §13 writes `max_callset_delta` /
-   `worst_callset` / `callset_one_sided` into `contrasts.csv` as of 2026-08-21, and step 7 carries
-   them into `gwas_summary.csv` — but job 28004190 predates them, so the summary on disk has none of
-   the three. Any step-7 rerun needs `analysis_grain.py` first or it exits 3. `confound_tag` itself
-   is unchanged and still means *program*, not callset; `METHODS.md` §10 carries the measurement and
-   the two rejected designs.
+6. **The callset-skew columns are emitted but have NOT been run — and the cause is now known.**
+   §13 writes `max_callset_delta` / `worst_callset` / `callset_one_sided` into `contrasts.csv` as of
+   2026-08-21, and step 7 carries them into `gwas_summary.csv` — but job 28004190 predates them, so
+   the summary on disk has none of the three.
+
+   **The cluster's `analysis_grain.py` had no `callset_skew()` function at all** until 2026-09-17:
+   written on the laptop 2026-08-21, never rsynced up. That made a **deadlock** nobody had hit,
+   because step 7 has not been rerun since — the cluster's `07_gwas.sh` *is* logic-identical to the
+   repo's, so it exits 3 on the missing columns, while the cluster's grain could not emit them.
+   Fixed by the checkout; regenerate the grain before any step-7 rerun. `PROJECT_LOG.md` 2026-09-17.
+
+   `confound_tag` itself is unchanged and still means *program*, not callset; `METHODS.md` §10
+   carries the measurement and the two rejected designs.
 
 7. **Step 0 (VCF→pgen for BR-DSNWGS) has no script.** It ran as notebook cells; `wgs_core.ipynb` §1
    is the whole record.
 
 8. **Seven `METHODS.md` numbers can only be settled on the cluster.** Run
    `python3 review/methods_numbers.py --strict` there; on a laptop those seven report `????` and the
-   rest come back clean. Each one is read-only, and the script names the file it could not open:
+   rest come back clean. **The script itself was never on the cluster** — it arrived 2026-09-17 with
+   the git conversion, which is why this has stayed open. It can now actually run. Each one is read-only, and the script names the file it could not open:
 
    | what it settles | source it needs |
    |---|---|

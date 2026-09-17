@@ -75,12 +75,24 @@ directories, passed, and was wrong.
 
 - **Hand cluster commands to the user; do not ssh.** They run them and paste back.
 - Hosts are FQDNs: `helix.nih.gov` (transfers), `biowulf.nih.gov` (compute). No ssh alias exists.
-- **Code reaches the cluster by `git pull`, never `rsync`.** The remote
-  (`SysBio-FAIRplex/amp-ad-pd-wgs-gwas`, private) was created 2026-08-21 and retired the two-rsync
-  dance. `rsync` without `--delete` cannot express a deletion, so retired scripts had to be removed
-  by hand and three stale-artifact bugs came of it; git expresses deletions. **Local absence still
-  ≠ cluster absence** for anything predating the remote, and for `results/` and
-  `clinical_core_out/`, which stay gitignored.
+- **Code reaches the cluster by `git`, never `rsync`.** The remote
+  (`SysBio-FAIRplex/amp-ad-pd-wgs-gwas`, private) was created 2026-08-21. `rsync` without
+  `--delete` cannot express a deletion, so retired scripts had to be removed by hand and three
+  stale-artifact bugs came of it; git expresses deletions. **Local absence still ≠ cluster
+  absence** for anything predating the checkout, and for `results/` and `clinical_core_out/`,
+  which stay gitignored.
+
+  **This rule said "retired the two-rsync dance" for four weeks while the cluster was not a
+  git repository at all** (`git pull` → `fatal: not a git repository`). Converted in place
+  2026-09-17; four files had drifted. A rule that describes an intention in the past tense reads
+  exactly like a rule that describes a fact — see `PROJECT_LOG.md` 2026-09-17.
+
+  **There are no GitHub credentials on biowulf** and GitHub refuses password auth, so `git fetch`
+  against the remote fails there. The transport is a **bundle**: `git bundle create ~/x.bundle main`
+  on the laptop, `scp` it to helix, then `git fetch ~/x.bundle main:refs/remotes/origin/main` on
+  the cluster. Unlike loose-file `scp` this carries the real commit graph, so `git rev-parse HEAD`
+  on the cluster returns the true commit — which `09_amppd_release.sh` stamps into every release.
+  A PAT or SSH key on biowulf would retire the bundle step; neither exists yet.
 - Never copy `clinical_core_out/` upward by any means — the laptop's `analysis_grain.csv` is stale
   and wrong (11,918 rows against the cluster's correct 12,495).
 - Both clinical scripts (`clinical_core.py`, `analysis_grain.py`) are **cluster-only**; the laptop

@@ -170,6 +170,116 @@ known issue 2 and the 2026-08-21 entry below.
 
 ---
 
+## 2026-09-17 (later) — the cluster was never a git checkout. Four weeks of docs asserting otherwise. Four files drifted; the results are unaffected.
+
+**Did.** Tried to `git pull` on `/data/CARDPB2/sysbio/wgs` to deliver step 9 and got
+`fatal: not a git repository`. **The cluster directory has never been a checkout.** Converted it in
+place, measured the drift against the repo, and corrected the three documents that asserted the
+opposite.
+
+**The documentation bug, which is the real finding.** `CLAUDE.md` rule 5 said the remote "was
+created 2026-08-21 **and retired the two-rsync dance**"; `HANDOFF.md` line 60 said "Code reaches the
+cluster by `git pull` (remote added 2026-08-21)"; the 2026-08-21 log entry said the same. All three
+were true about the *laptop* — the remote exists and holds all 50 tracked files — and false about
+the cluster, where the workflow was never adopted. **A rule written in the past tense about an
+intention is indistinguishable from a rule written in the past tense about a fact.** Nothing in the
+project could have caught this, because every check that would have run `git` on the cluster was
+itself premised on the cluster being a repo.
+
+**No GitHub credentials on biowulf**, and GitHub no longer accepts password auth, so fetching from
+the remote there fails outright. Transport is now a **bundle** — `git bundle create` on the laptop,
+`scp` to helix, `git fetch ~/adpd.bundle main:refs/remotes/origin/main` on the cluster. This is not
+the loose-file `scp` rule 5 forbids: a bundle carries the whole commit graph, so the cluster ends up
+a genuine checkout at the true commit, and `git rev-parse HEAD` — which `09_amppd_release.sh` stamps
+into every release — returns the real hash. Loose-file `scp` into the checkout would have been worse
+than useless: `rev-parse` would still succeed and stamp releases with a commit that does **not**
+contain the script that built them.
+
+**Two traps in the conversion itself, both worth keeping.**
+
+- **`git show origin/main:.gitignore > .gitignore` creates the file before the command runs.** The
+  fetch had silently failed, `git show` errored, and the redirect still left a **zero-byte
+  `.gitignore`** — on top of a 4.2 TB data tree. Harmless under `status`, which reports `data/` as a
+  single untracked directory, and a loaded gun under any `git add -A`. Use
+  `git show … > f.new && mv f.new f`, and gate on `git rev-parse --verify origin/main` first.
+- **`git reset origin/main` (mixed, no `--hard`) is the whole conversion.** It sets HEAD and the
+  index and touches **no** working-tree file, so the cluster's copies survive and `git status`
+  becomes a drift report. `--hard` here would have destroyed the 30 KB `README.md` of issue 3 and
+  four files' worth of divergence before anyone could look at them.
+
+**The drift: 16 modified files. Method matters, because two naive checks both gave wrong answers.**
+
+Line counts first suggested the drift was one commit — `ccebea8` "Strip narrative commentary from
+pipeline scripts" — because **seven files matched its per-file line counts exactly** (151, 126, 212,
+59, 203, 16, 12). Suggestive, not proof, and the second check contradicted it: stripping whole-line
+comments reported `07_gwas.sh`, `08_ctrl_ctrl_filter.py` and `af_concordance_build.py` as code
+changes. Both were wrong in opposite directions.
+
+What settled it, per file type:
+
+| type | test | why the cruder test failed |
+|---|---|---|
+| `.py` | **AST comparison with docstrings stripped** | comments are not in an AST at all; `ccebea8` rewrote module docstrings, which a text diff counts as code |
+| `.sh` | comment strip **including trailing** comments, quote-aware | `ccebea8` realigned trailing comments on `07_gwas.sh`'s eight knob lines. Values byte-identical (`20`, `0.05`, `1e-4`, `0.02`, `5e-8`, `5`); a whole-line-only stripper called it CODE CHANGED |
+
+By AST, `ccebea8` is **comment-and-docstring-only for all four Python files it touched**, including
+`af_concordance_build.py`.
+
+**The verdict, and it is the one that mattered: every step that produced the released results ran
+the repo's logic.**
+
+| file | verdict |
+|---|---|
+| `scripts/06_ancestry_qc.sh` | **LOGIC IDENTICAL** |
+| `scripts/af_concordance_build.py` | **LOGIC IDENTICAL** — step 6a, the only licensed deletion |
+| `scripts/07_gwas.sh` | **LOGIC IDENTICAL** (trailing comments only) |
+| `scripts/08_ctrl_ctrl_filter.py` | **LOGIC IDENTICAL** |
+| `scripts/04_relatedness.sh`, `af_concordance_build.sh`, `clinical_core.py`, `submit.sh` | LOGIC IDENTICAL |
+
+So the 4,187 exclusion list, the association set, job 28004190 and the ctrl-vs-ctrl annotation were
+all produced by the code in git. **`METHODS.md` §6 and §8 stand.** This was not the expected answer
+and it was worth the work to establish rather than assume.
+
+**FOUND — `analysis_grain.py` on the cluster has no `callset_skew()` at all, and this is the cause
+of `HANDOFF.md` issue 6.** The function, `ONE_SIDED_MIN`, and the call site are all present in the
+repo and absent on the cluster: §13's callset-skew columns were written 2026-08-21 and the file was
+never rsynced up.
+
+The consequence is a **deadlock**, undiscovered only because step 7 has not been rerun since. The
+cluster's `07_gwas.sh` is logic-identical to HEAD, so it *does* exit 3 when `contrasts.csv` lacks
+`max_callset_delta`/`worst_callset`/`callset_one_sided` — while the cluster's `analysis_grain.py`
+cannot emit them. Regenerate the grain, step 7 exits 3; regenerate again, identical failure. Issue 6
+recorded the symptom ("emitted but have NOT been run") and attributed it to job 28004190 predating
+the columns. That was true and incomplete: the code to produce them was never on the machine.
+
+**Also never on the cluster: `review/methods_numbers.py`.** It came down as a *deletion* in the
+conversion, meaning it had never been transferred. `HANDOFF.md` issue 8 instructs
+`python3 review/methods_numbers.py --strict` **on the cluster** to settle seven `METHODS.md`
+numbers. The script was not there. Same for `review/plot_af_filter_effect.py`, `scripts/nb_guard.py`
+and `scripts/hooks-pre-commit` — so the pre-commit notebook guard never existed cluster-side either.
+
+**Changed.** Cluster converted to a checkout at `4f73ac3`. Twelve deleted files restored (step 9's
+script, `methods_numbers.py`, `plot_af_filter_effect.py`, `nb_guard.py`, `hooks-pre-commit`,
+`METHODS.md`, `wgs_core.ipynb`, the `SUMSTATS_*` pair, `demo_sample_check/`). Four drifted files
+checked out. `CLAUDE.md` rule 5 rewritten to say what is true and to record the bundle transport.
+
+**Left alone deliberately: `README.md`.** The cluster's 30 KB copy is issue 3 — its §2
+(reference-data acquisition) is what the repo version lacks, and `06_ancestry_qc.sh` cites that
+section by number. Backed up to `README.cluster.30k.bak`; the merge is still open.
+
+**Next.**
+1. Merge the cluster README's §2 into the repo copy — closes issue 3, and it is now a readable
+   `git diff` rather than an assertion.
+2. `python3 review/methods_numbers.py --strict` on the cluster. It can finally run; issue 8.
+3. Regenerate the grain with the repo's `analysis_grain.py` before any step-7 rerun; issue 6.
+4. A PAT or SSH key on biowulf retires the bundle step.
+
+**Dead end, recorded so it is not retried:** comparing line counts against a suspected commit. Seven
+exact matches out of nine felt conclusive and was not — `analysis_grain.py` matched nothing (137 vs
+79) and turned out to be the only file with a substantive difference.
+
+---
+
 ## 2026-09-17 — a release step for the AMP-PD subset: `scripts/09_amppd_release.sh`. Written, tested against a stub, NOT run.
 
 **Did.** Wrote step 9 — subset the AMP-PD donors out of the final QC'd association set and publish

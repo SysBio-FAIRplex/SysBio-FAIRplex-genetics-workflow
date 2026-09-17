@@ -207,6 +207,10 @@ review/                        ← figures. Run on the cluster against outputs i
   plot_af_filter_effect.py     ← the AF-filter before/after proof figure + eta^2 tables
   plot_pcs_by_callset.py       ← PC scatter by callset + eta^2 per PC per stratum
   plot_gwas.py                 ← QQ + Manhattan, with lambda_GC cross-checked against step 7's
+  drift_check.py               ← does the working tree differ from a revision in anything that
+                                 RUNS? AST for .py, quote-aware comment strip for .sh, so a
+                                 rewritten docstring or realigned trailing comment reads as
+                                 identical. Read-only. `python3 review/drift_check.py [<rev>]`
   methods_numbers.py           ← re-derives every number in METHODS.md from the artifacts and
                                  diffs it against the doc. Read-only. Run it before any write-up
                                  edit; --strict to fail on anything it could not check.
