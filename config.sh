@@ -65,9 +65,14 @@ LBL_WB="${DIR_WB}/genotools/FILTERED.wb_dwgs_ancestry_umap_linearsvc_predicted_l
 LBL_BR="${DIR_BR}/genotools/FILTERED.br_dsnwgs_ancestry_umap_linearsvc_predicted_labels.txt"
 
 # ── reference data ───────────────────────────────────────────────────────────
-# Two homes, along the same line as everything else: REF_DIR is fetched and large and is
-# not in the repo (see README §2 — none of it is redistributable); SHIP_REF is small,
-# versioned, and travels with the code. Nothing is copied between them.
+# Two homes, along the same line as everything else: REF_DIR is fetched and large and is not
+# in the repo (none of it is redistributable); SHIP_REF is small, versioned, and travels with
+# the code. Nothing is copied between them.
+#
+# HOW TO OBTAIN REF_DIR'S CONTENTS IS RECORDED NOWHERE — not here, not in either README, not
+# in wgs_core.ipynb. This comment used to cite "README §2"; no README in this project has
+# numbered sections, and the citation had been dangling since before the earliest copy on
+# disk. A fresh clone cannot run step 1 or step 6. HANDOFF.md issue 3.
 REF_FASTA="${REF_DIR}/GRCh38_full_analysis_set_plus_decoy_hla.fa.zst"
 REF_PANEL="${REF_DIR}/ref_panel_gp2_prune_rm_underperform_pos_update"
 REF_LABELS="${REF_DIR}/ref_panel_ancestry_updated.txt"

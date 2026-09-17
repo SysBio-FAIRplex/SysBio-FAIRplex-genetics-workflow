@@ -10,7 +10,7 @@
 # from the ancestry-split KING pairs + common-set call rates. It only writes text outputs and
 # prints an aggregate summary; NO genotype file is modified here.
 #
-# It is small enough to run on an interactive node instead — see README §3 step 5.
+# It is small enough to run on an interactive node instead — see README "Run order", tier 1.
 #
 #   ./submit.sh scripts/05_excludelist.sh
 

@@ -170,6 +170,54 @@ known issue 2 and the 2026-08-21 entry below.
 
 ---
 
+## 2026-09-17 (later still) — `HANDOFF.md` issue 3 was wrong in every particular. Five citations pointed at a README section that never existed.
+
+**Did.** Finished the cluster conversion and then checked issue 3, which had claimed for weeks that
+"the cluster's `README.md` (30 KB) has not been merged in" and that `06_ancestry_qc.sh` cited that
+copy's §2. With both copies finally comparable, none of it held.
+
+| the claim | the fact |
+|---|---|
+| cluster README is 30 KB | **15,297 bytes.** 30,753 is the *diff* size — the number was the diff, not the file |
+| the cluster's copy is the larger one | the repo's is 26 KB. The cluster's is **smaller** |
+| it holds a §2 the repo lacks | **neither copy has numbered sections at all** |
+| merging §2 closes the issue | there is no §2 anywhere. The content must be **written**, not reconciled |
+
+**FOUND — five dangling citations to a numbering scheme that predates every README on disk.**
+`config.sh` and `scripts/06_ancestry_qc.sh` cited "README §2"; `submit.sh` and
+`scripts/05_excludelist.{sh,py}` cited "README §3". The cluster's README headings are Project
+Overview / Infrastructure / Directory Structure / Datasets / Scripts / Pipeline Order / Sex
+Crosswalk Notes / Key Gotchas; the repo's are the same shape with "Run order" in place of "Pipeline
+Order". Neither has a §2 or a §3. These point at a README older than both surviving copies.
+
+**The real issue, restated: nothing in this project records how to obtain the reference data.**
+Not `config.sh`, not either README, not `wgs_core.ipynb` — checked by grep: the notebook has 7 hits
+for synapse, 9 for bcftools, 3 for gcloud, and **zero** for the chain file or the ancestry panel.
+Missing are `ref_panel_gp2_prune_rm_underperform_pos_update`, `ref_panel_ancestry_updated.txt`, the
+GRCh38 fasta, and `hg19ToHg38.over.chain.gz`. Every source says where they go; none says where they
+come from. **A fresh clone cannot run step 1 or step 6.** That is a real reproducibility hole and it
+was hiding behind a docs-merge framing that made it look clerical.
+
+**Changed.** Issue 3 rewritten. All five citations repointed — comment-only, and
+`review/drift_check.py` confirms LOGIC IDENTICAL on `config.sh`, `submit.sh`,
+`05_excludelist.{sh,py}` and `06_ancestry_qc.sh`. The first real use of the tool built two hours
+earlier, and it is what makes a comment edit to four pipeline files a safe thing to do at all.
+
+**Why this kept its shape for weeks.** Issue 3 was written from the *observation* that two READMEs
+differed and the *inference* that the bigger one had something the other lacked. The size was
+mismeasured, the direction was backwards, and the §2 was never checked to exist. Nothing could
+catch it, because comparing the two copies required the cluster to be a git checkout — which it
+was not. Two bad doc claims in one day, both from the same root: **`METHODS.md` has
+`review/methods_numbers.py` re-deriving every number from the artifacts; `HANDOFF.md`,
+`README.md` and `CLAUDE.md` have nothing equivalent, and all three carried false claims today.**
+
+**Next.** Write the acquisition down — URLs or `gcloud`/`synapse` commands for the four artifacts —
+then delete `README.cluster.30k.bak` (the name is wrong; it is 15 KB, kept as written so it matches
+what was typed) and `~/README.cluster.diff`. The cluster README's `## Pipeline Order` section is
+the only content worth harvesting first.
+
+---
+
 ## 2026-09-17 (later) — the cluster was never a git checkout. Four weeks of docs asserting otherwise. Four files drifted; the results are unaffected.
 
 **Did.** Tried to `git pull` on `/data/CARDPB2/sysbio/wgs` to deliver step 9 and got

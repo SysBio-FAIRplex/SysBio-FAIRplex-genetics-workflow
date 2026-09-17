@@ -13,7 +13,8 @@
 # Anything after the script name is passed through to sbatch verbatim, so an explicit
 # --output=/--error= of your own still wins.
 #
-# You run this, not the AI (login + 2FA are yours). Plain `sbatch` works too — see README §3.
+# You run this, not the AI (login + 2FA are yours). Plain `sbatch` works too — see README
+# "Run order".
 
 set -euo pipefail
 

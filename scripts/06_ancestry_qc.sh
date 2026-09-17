@@ -38,7 +38,8 @@
 # --indep-pairwise for them to dominate a top PC, which then encodes inversion/HLA haplotype instead
 # of ancestry and propagates into every GWAS as a covariate. But 17q21.31 is MAPT and the MHC is a
 # real AD locus, so masking them from ASSOCIATION would delete the signals we most expect to find.
-# The BED ships at ref/highld_exclude_hg38.bed; rsync it to $REF_DIR before running (README §2). If
+# The BED ships at ref/highld_exclude_hg38.bed; copy it to $REF_DIR before running. (This used to
+# cite "README §2"; no README in this project has numbered sections — HANDOFF.md issue 3.) If
 # absent the run continues WITHOUT the exclusion and says so loudly.
 #
 # Autosomes only (chrX needs --merge-par + sex-aware handling, a separate job). All 11 strata run;

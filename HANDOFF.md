@@ -170,11 +170,38 @@ True now, and a run breaks if any of them changes. Not open work.
    §0 records syn IDs for 3. Surfaced 2026-08-21 when the acquisition commands moved out of
    `clinical_core.py`'s header into the notebook. A reproducibility gap, not a blocker.
 
-3. **The cluster's `README.md` (30 KB) has not been merged in.** `06_ancestry_qc.sh` references that
-   copy's §2 (reference-data acquisition) by number, and §2 is what the repo version lacks: nothing
-   here says how to obtain the reference panel or the liftover chain. **As of 2026-09-17 this is a
-   readable `git diff` rather than an assertion** — the cluster is a checkout and `README.md` is its
-   one modified file (backed up as `README.cluster.30k.bak`). Merge §2 in and the issue closes.
+3. **Nothing in this project records how to obtain the reference data.** Not `config.sh`, not
+   either README, not `wgs_core.ipynb`. A fresh clone cannot run step 1 or step 6.
+
+   Missing: the GenoTools ancestry panel (`ref_panel_gp2_prune_rm_underperform_pos_update`,
+   a pruned GP2 panel), `ref_panel_ancestry_updated.txt`, the GRCh38 fasta, and the
+   GRCh37→GRCh38 liftover chain (`hg19ToHg38.over.chain.gz`). Every source lists **where they
+   go** and none says **where they come from**.
+
+   **This issue used to read "the cluster's `README.md` (30 KB) has not been merged in," and
+   every part of that was wrong** — established 2026-09-17 once the cluster became a checkout
+   and the two copies could actually be compared:
+
+   | the claim | the fact |
+   |---|---|
+   | cluster README is 30 KB | **15,297 bytes.** The 30 KB was the *diff* size (30,753) |
+   | cluster's copy is the larger one | repo's is 26 KB — the cluster's is **smaller** |
+   | it holds a §2 the repo lacks | **neither copy has numbered sections.** Cluster headings: Project Overview / Infrastructure / Directory Structure / Datasets / Scripts / Pipeline Order / Sex Crosswalk Notes / Key Gotchas |
+   | merging §2 closes it | there is no §2 to merge. The content exists nowhere and must be **written**, not reconciled |
+
+   **Five citations pointed at that phantom numbering** — `config.sh` and `06_ancestry_qc.sh`
+   at "README §2", `submit.sh` and `05_excludelist.{sh,py}` at "README §3". All five predate
+   the oldest README on disk. Repointed 2026-09-17 (comment-only; `review/drift_check.py`
+   confirms LOGIC IDENTICAL on all five).
+
+   The cluster README's one unique asset is its `## Pipeline Order` section — per-callset
+   download/reindex/filter/liftover command sequences. Most of that now lives in
+   `wgs_core.ipynb`; the chain file and the ancestry panel are the parts nothing covers.
+   Preserved on the cluster as `README.cluster.30k.bak` (misleading name, kept as written)
+   and `~/README.cluster.diff`.
+
+   **To close this:** write the acquisition down — URLs or `gcloud`/`synapse` commands for the
+   four artifacts above — and delete the two backups.
 
 4. **DivCo's source VCF is 0 bytes** on the cluster (`merged.deduped.vcf.gz`). The pgen was derived
    before it was truncated, so nothing is blocked, but DivCo cannot be re-derived from source

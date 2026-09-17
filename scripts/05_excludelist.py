@@ -29,7 +29,7 @@ Logic:
      samples: greedy maximal-unrelated-set — repeatedly drop the highest-degree node, tie-broken by
      LOWEST call rate (so we keep the better-genotyped sample).   -> reason 'relative_2nd_deg'
   3. GENOTOOLS QC-FAILS — recovered from each callset's genotools JSON `<ANC>_pass_fail` manifest
-     (see README §3 step 5). Genotools QC is a per-ancestry STEP CHAIN; the
+     (see README "Run order", tier 1). Genotools QC is a per-ancestry STEP CHAIN; the
      JSON records, per ancestry, one {status, input, output} entry per step, where input/output are
      the bed-fileset STEMS bracketing that step:
          callrate: input=..._ancestry_<ANC>       -> output=..._<ANC>_callrate
