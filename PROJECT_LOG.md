@@ -177,6 +177,54 @@ known issue 2 and the 2026-08-21 entry below.
 
 ---
 
+## 2026-09-18 (later) — the history rewrite RAN. Local history is clean; the remote is not, until pushed.
+
+**Did.** `git filter-repo --replace-text` over 31 literal rules. 32 commits, **all new SHAs** — the
+taint reached the root commit, so there was no graft point. New root 641e653, new HEAD e373420.
+
+**Verified four ways.**
+
+| check | result |
+|---|---|
+| 243 blobs + 33 commit messages in the new history, swept for every ID shape | only the 748 COUNT remains, as designed |
+| collateral — numbers removed that were not targets | none, across every blob |
+| working tree vs the pre-rewrite content | identical except the 8 scrub files; diffed against the backup bundle in a throwaway clone |
+| local object purge | reflog 0, `fsck --unreachable` empty, one 9.14 MiB pack, old SHAs unresolvable |
+
+**The rules matched the BACKTICKED forms of the bare numbers, and that was load-bearing.** Replacing
+the bare Mayo individualID as a plain literal would have corrupted five unrelated five-digit figures
+in this log that merely contain it as a substring. Every real-ID occurrence is backticked and every
+collateral occurrence is not; that is what separates them. Simulated over all 234 pre-rewrite blobs
+before running anything, which is the only reason this is stated as fact rather than hope.
+
+**Gotcha worth recording — filter-repo had already run here.** `.git/filter-repo/already_ran` was
+sitting there from **2026-08-21**, the notebook-outputs scrub. The tool then asks "treat this run as
+a continuation?" and a non-interactive shell dies on `EOFError`, which reads like a tool failure and
+is not one. Answer Y (it only controls whether metadata is updated or rewritten — it has no bearing
+on what gets rewritten), or move `.git/filter-repo` aside first.
+
+**Also surfaced from that old run's records:** filter-repo leaves references to rewritten commit
+hashes **inside commit messages** as-is. The 2026-08-21 run left one dangling (to commit 27697096).
+Nothing in the current messages cites a SHA, so this run added none — but it means a doc or message
+that cites a commit is silently invalidated by any rewrite. Relevant to `09_amppd_subset.sh`, which
+stamps `git rev-parse HEAD` into release provenance: **rewrite first, release second.** Step 9 has
+never run, so nothing published cites a SHA that no longer exists.
+
+**Next, in order.**
+
+1. `git remote add origin …` — filter-repo removes it deliberately, so a rewritten history cannot be
+   pushed into the old one by reflex.
+2. Push. **Force-push leaves the old objects reachable through GitHub's API and cached commit views**
+   until their GC runs, which we do not control. Deleting and recreating the repo is the only way to
+   be certain; it costs nothing here (no issues, PRs or forks).
+3. Re-point the cluster checkout — its history is now unrelated and `git pull` will refuse. Fits the
+   existing bundle transport: new bundle → helix → `git fetch` + `git reset --hard origin/main`.
+4. **Delete `~/adpd-prescrub-backup.bundle` and `~/adpd-replacements.txt`.** The first is a complete
+   copy of the unscrubbed history; the second lists every ID in plaintext. Both were necessary and
+   both are now the largest remaining copies of what was just removed. Neither may enter the repo.
+
+---
+
 ## 2026-09-18 — a pre-release scrub: ~30 real participant IDs were in the PROSE. Nothing was in the data; every guard we built governs the wrong surface.
 
 **Did.** Swept every tracked file and every blob in history for identifiable content, ahead of

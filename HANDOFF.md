@@ -304,14 +304,18 @@ True now, and a run breaks if any of them changes. Not open work.
     Note the cluster also holds superseded copies under `by_ancestry_qc_pre_pcfix_20260726/` and
     `plotdata/`; `review/methods_numbers.py` names the canonical one it read.
 
-13. **The repo is NOT yet safe to make public — the working tree is clean, the history is not.**
-    Scrubbed 2026-09-18: ~30 real donor/specimen IDs were sitting in prose as worked examples
-    (`demo_sample_check/README.md`'s crosswalk-rule table was the worst — its rows are cross-dataset
-    ID→ID mappings). All replaced with format placeholders. **They remain in past commits, which are
-    already pushed to `origin`** (private, so contained). The taint starts at the **root commit**,
-    so all 31 commits get new SHAs — there is no graft point. Local `main` is 6 ahead of
-    `origin/main` and 0 behind, so a force-push is safe. Do it before flipping the repo public,
-    and re-point the cluster checkout afterwards (its history becomes unrelated).
+13. **Local history is scrubbed; the REMOTE is not, until pushed.** 2026-09-18: ~30 real
+    donor/specimen IDs were sitting in prose as worked examples (`demo_sample_check/README.md`'s
+    crosswalk-rule table was the worst — its rows are cross-dataset ID→ID mappings). Replaced with
+    format placeholders, then `git filter-repo` rewrote all 32 commits (the taint reached the root,
+    so every SHA changed; new root 641e653). Verified: 243 blobs + 33 messages hold no ID shape, no
+    collateral, old objects purged locally. **`origin` still carries the old history and filter-repo
+    removed the remote by design.** Before making the repo public: re-add origin, then either
+    force-push or — safer, and free here — delete and recreate the GitHub repo, since a force-push
+    leaves the old objects reachable via GitHub's API and cached views until their GC runs. Then
+    re-point the cluster checkout (its history is now unrelated; `git pull` will refuse) and delete
+    `~/adpd-prescrub-backup.bundle` and `~/adpd-replacements.txt`, which are now the largest
+    surviving copies of what was removed. `PROJECT_LOG.md` 2026-09-18 (later).
 
 14. **No guard covers identifiers in PROSE.** `.gitignore` governs paths; `nb_guard.py` governs
     notebook outputs. Both were built after the 2026-08-21 incident and both still work — neither
