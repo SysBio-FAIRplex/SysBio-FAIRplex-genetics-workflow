@@ -66,7 +66,9 @@ number, or symptom, then read the dated entry.
 have all run to completion on the four-callset cohort, and `review/plot_gwas.py` has produced QQ +
 Manhattan for all 17 viable contrasts (scipy λ matches step 7's awk λ to 3 dp on every one). What
 remains is the write-up. `METHODS.md` is drafted and, as of 2026-08-24, its numbers are derived by
-`review/methods_numbers.py` rather than transcribed; a slide deck exists and is unreviewed, and the
+`review/methods_numbers.py` rather than transcribed — and as of 2026-09-17 (night) that checker has
+finally **run on the cluster**, where the artifacts are: **79 ok · 0 MISMATCH · 3 unavailable**, the
+three being computations or reruns rather than transcription questions. A slide deck exists and is unreviewed, and the
 14 flags it raised are 9 closed, the rest `HANDOFF.md` issues 6, 8 and 9. Read `README.md` for the run order
 and `HANDOFF.md` for status and open issues; this block is the short version.
 
@@ -262,10 +264,35 @@ is — but it belongs in the write-up if the answer is nonzero.
 outside `data/merged/`.** Every §7 number traces to it. This is the same shape as the eta² baseline
 that survived its overwrite only because someone had typed the numbers into this log by hand.
 
+**Verified, same night, after the bundle landed at `b476e79`: 79 ok · 0 MISMATCH · 3 could not
+run**, against 41 · 2 · 11 before. Every `METHODS.md` number is now derived from a cluster artifact
+rather than transcribed or unchecked. The three remaining are honestly unavailable — the
+discordance multiplier (a computation, issue 9), the callset-skew columns (needs a step-7 rerun,
+issue 6), and the step-6 job ID. `--strict` exits 1 on those by design, which is the point of
+CLAUDE.md rule 3.
+
+**The run answered a standing question for free.** §6.3's gate table has three rows because only
+three cells were testable: EUR `divco_hs` has **57** controls and `br_dsnwgs` **13**, both under
+the 100-control floor. `HANDOFF.md` issue 8 asked whether the omission meant "evaluated and below
+the bar" or "never evaluated for want of controls" and called silence not an answer. It is the
+second. `METHODS.md` §6.3 now states it.
+
+**Two traps in the delivery itself.**
+
+- `git merge --ff-only` **aborted** because `requirements.lock.txt` existed untracked on the
+  cluster — it is the file the commit adds, scp'd up from there earlier. The refusal was correct
+  and changed nothing; `git show origin/main:<f> | diff - <f>` before removing it is the safe
+  order.
+- The first `--strict` run after the `sed` derived **11,534** for the per-callset sum instead of 0.
+  That is 13,428 − 1,894, i.e. exactly `wgs_harm`, and it confirmed the structural defect
+  independently of the fix. **It also nearly read as success** — a number that moved from 0 to
+  something plausible, in a run where HEAD was still `07eaa3e` and none of the new code was
+  present. Check `git rev-parse HEAD` before believing an improvement.
+
 **Next.**
-1. Bundle to the cluster and re-run `python3 review/methods_numbers.py --strict` there — the §1/§3,
-   §6.3 and §7 groups should all resolve for the first time.
-2. Settle the 12-sample delta above.
+1. Settle the 12-sample delta above (issue 11).
+2. `bash scripts/runlog.sh --md` on the cluster to recover the step-6 job ID — the last cheap
+   `????` in the checker.
 3. Rename the laptop checkout to `amp-ad-pd-wgs-gwas` to match the remote.
 
 ---

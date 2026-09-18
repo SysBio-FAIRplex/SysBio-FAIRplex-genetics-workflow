@@ -232,10 +232,20 @@ True now, and a run breaks if any of them changes. Not open work.
 7. **Step 0 (VCF→pgen for BR-DSNWGS) has no script.** It ran as notebook cells; `wgs_core.ipynb` §1
    is the whole record.
 
-8. **Seven `METHODS.md` numbers can only be settled on the cluster.** Run
-   `python3 review/methods_numbers.py --strict` there; on a laptop those seven report `????` and the
-   rest come back clean. **The script itself was never on the cluster** — it arrived 2026-09-17 with
-   the git conversion, which is why this has stayed open. It can now actually run. Each one is read-only, and the script names the file it could not open:
+8. **MOSTLY CLOSED 2026-09-17 (night).** Ran on the cluster for the first time:
+   **79 ok · 0 MISMATCH · 3 could not run.** Every `METHODS.md` number is now derived from a
+   cluster artifact. Three remain, and none is a transcription question: the discordance
+   multiplier (issue 9, a computation), the callset-skew columns (issue 6, needs a step-7 rerun),
+   and the step-6 job ID — recover that one with `bash scripts/runlog.sh --md`.
+
+   Settled in that run: the 94-genome gap (fusion, not QC — see the index); §6.4's excluded share
+   (0.06%) and list size (4,187); §6.3's control counts off the per-cell `.keep`; and **why the
+   §6.3 gate table has only three rows** — EUR `divco_hs` has 57 controls and `br_dsnwgs` 13,
+   both under the 100 floor, so neither was evaluable. `METHODS.md` §6.3 now says so.
+
+   The history below is kept because the *reason* it stayed open for weeks is the lesson: the
+   script was never on the cluster (it arrived 2026-09-17 as a deletion), and once it was, two of
+   its checks read laptop-shaped paths and one was structurally unable to pass.
 
    | what it settles | source it needs |
    |---|---|

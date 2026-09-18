@@ -228,6 +228,11 @@ expected to observed rejections is the Benjamini-Hochberg FDR estimate for that 
 | EUR | `wb_dwgs` | 3,064 | 132 | 377 | 0.35× |
 | AJ | `wb_dwgs` | 638 | 97 | 400 | 0.24× |
 
+The table has three rows because only three cells were testable. EUR `divco_hs` (57 controls) and
+EUR `br_dsnwgs` (13) fall below the 100-control floor the HWE channel requires, so neither was
+evaluated; their absence from the table is want of controls, not a passing result. Counts are the
+per-cell `.keep` lists handed to PLINK, which are the sample sets the tests actually ran on.
+
 `wgs_harm` exceeds expectation 4.5-fold from the smallest of the three samples — real heterozygote
 excess, consistent with mismapping in the lifted callset. The other two rows sit at or below chance;
 underdispersion is expected at these control counts, since the HWE *P* distribution is discrete and
