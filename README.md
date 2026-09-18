@@ -357,7 +357,7 @@ of the 46 objects in the sumstats release came back MD5-less (`PROJECT_LOG.md` 2
 psam sample IDs use three different formats requiring separate resolution paths:
 - **Direct match** (620 samples): numeric psam IID matches `individualID` in individual metadata directly
 - **Suffix stripping** (293 samples): specimen IDs like `<individualID>_DLPFC_WGS` — strip `_DLPFC_WGS` suffix to recover numeric `individualID`
-- **Biospecimen lookup** (106 samples): `-D` suffixed specimen IDs like `<specimenID>-D` — match via `specimenID` in biospecimen metadata to get numeric `individualID`
+- **Biospecimen lookup** (106 samples): `-D` suffixed specimen IDs (`<specimenID>-D`) — match via `specimenID` in biospecimen metadata to get numeric `individualID`
 
 Result: 1019/1019 (100%) matched. The crosswalk now lives in `clinical_core.py` §7, not the
 retired `update_sex.py`.

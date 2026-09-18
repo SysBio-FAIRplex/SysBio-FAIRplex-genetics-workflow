@@ -11,7 +11,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REMOTE="${REMOTE:-<user>@biowulf.nih.gov}"
+REMOTE="${REMOTE:-${USER}@biowulf.nih.gov}"
 SRC="${SRC:-/data/CARD/sysbio/data/beta1/pseudobulk/}"
 DEST="${HERE}/pseudobulk/"
 

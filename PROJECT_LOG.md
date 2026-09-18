@@ -50,6 +50,7 @@ number, or symptom, then read the dated entry.
 | the sentinel tripwire | **deleted 2026-08-20, both call sites.** It gated nothing (stage C applies the list later in the same job) and its 9-gene scope made both its positive and negative results uninformative. Do not reintroduce | 2026-08-20 (night), (evening) |
 | `review/mask_cohort_artifacts.py`, `diag_cah.sh`, `diag_threads.py`, `compare_pcs.py` | **deleted 2026-08-21.** Reasons per file in that entry | 2026-08-21 (git remote) |
 | subject-level data in git | one notebook carried 18 stored outputs, one of them an `individual_id` × callset table. Scrubbed from history before the first push; `scripts/nb_guard.py` now blocks it | 2026-08-21 (git remote) |
+| participant IDs in PROSE, not in data | ~30 real donor/specimen IDs were sitting in `demo_sample_check/README.md`, `PROJECT_LOG.md` and four code docstrings as worked examples — including cross-dataset ID→ID crosswalk rows, and IDs carrying ancestry and AD/PD labels. Replaced with format placeholders 2026-09-18. `nb_guard.py` could never have caught these: it governs outputs, and prose is source | 2026-09-18 |
 | three AJ contrasts report `lambda_gc` exactly **0.0000** | **non-convergence, not deflation.** `AD_vs_DLB`, `PD_vs_AD` and `control_amppd_vs_control_ampad` are AJ's cross-callset contrasts; every variant returns `ERRCODE=UNFINISHED` with *P* ≈ 1, so the median chi-square is ~0. AJ PC1 is η² 0.962 on callset and enters as a covariate, so a covariate separates the arms almost perfectly. All three are below the viability floor and none is reported | 2026-08-24 |
 | METHODS §10's "roughly six times any cross-program contrast" | **false as written.** EUR `PD_vs_AD` removed 387,207 to differential missingness, more than `PD_vs_DLB`'s 353,068, and was omitted from the comparison set. The mechanism argument is unaffected; only the multiplier failed. Rewritten as "largest within-program removal, same magnitude as the primary cross-program contrast" | 2026-08-24 |
 | METHODS §6.4's "0.058% of variants" vs PROJECT_LOG's "0.05%" | both are the same quantity with no stated denominator. 0.058% = 4,385 / 7,538,809, measured on the **ungated 4,415** list; the live gated list is 4,187. Both round to 0.06% of EUR's post-QC variants, which is now what every doc says | 2026-08-24 |
@@ -173,6 +174,71 @@ known issue 2 and the 2026-08-21 entry below.
   drops. Enrollment overlap is a superset of sequencing overlap.
 - **Step 4's `COMMON_GENO=0.005` is load-bearing** — it must stay below the smallest callset's share
   of the cohort (BR is 97/13,334 = 0.0073). Re-check if a callset under ~0.5% is ever added.
+
+---
+
+## 2026-09-18 — a pre-release scrub: ~30 real participant IDs were in the PROSE. Nothing was in the data; every guard we built governs the wrong surface.
+
+**Did.** Swept every tracked file and every blob in history for identifiable content, ahead of
+making the repo public.
+
+**Clean, and worth stating so the sweep is not repeated.** No data file was ever tracked — checked
+every path added across `git log --all --diff-filter=A`, not just the current tree. Both notebooks
+carry zero stored outputs in **every historical blob**, so the 2026-08-21 history rewrite held and
+`nb_guard.py` has kept it. No credentials. The two tracked `results/pca/*.csv` are genuinely
+aggregate. `syn*` accessions are public dataset pointers. The `.gitignore` negations are narrow and
+correct.
+
+**Found — the leak was entirely in prose.** ~30 real donor and specimen IDs, used as worked
+examples:
+
+| where | what |
+|---|---|
+| `demo_sample_check/README.md` | the donor-column table, the "one donor is X in A, Y in B" sentence, **the entire crosswalk-rule table**, and the 97/97 finding's six `PM-*` IDs |
+| `PROJECT_LOG.md` (2026-08-17, 2026-08-18) | two numeric AMP-AD IIDs tagged with **ancestry** (AJ, EUR), and two `PM-MS_*` BR IIDs in a passage saying one copy may carry an AD label and the other PD |
+| `03_overlap.py`, `demo_sample_check.ipynb`, `clinical_core.py` §7 table, `README.md` sex-crosswalk | copies of the same two sentences |
+
+The worst of these is the crosswalk-rule table: its rows are **ID→ID mappings across datasets**,
+which is precisely the linkage the two DUAs exist to prevent. It was not a leak of a value; it was
+a leak of a join.
+
+**Changed.** All replaced with format placeholders (`MAP<8d>` → `R<7d>`, `<specimenID>-D` →
+`<individualID>`). Every one of these passages was teaching ID *shape*, never naming a donor, so
+the placeholders lose nothing — which is the tell that the real IDs were never needed. The six
+`PM-*` IDs in the 97/97 finding were dropped outright rather than placeheld, because each carried a
+per-donor attribute. Also removed a personal cluster account and two laptop paths.
+
+**THIS FILE WAS EDITED IN PLACE, against the append-only rule at the top.** Three passages in the
+2026-08-17 and 2026-08-18 entries. Redaction is the one thing that cannot be done by appending — a
+correction can live in a later entry, but an identifier cannot. The findings are intact and still
+actionable: the two BR duplicates are now identified by their KING cluster ids (dup19 n=3, dup27
+n=2), which recovers the donors from the intermediates on the cluster without publishing them.
+
+**Found — every guard we have governs the wrong surface.** `.gitignore` governs paths.
+`nb_guard.py` governs notebook outputs. Both were written in response to the 2026-08-21 incident,
+and both were working. Neither can see an identifier typed into a markdown table by hand, and that
+is now two distinct leaks (outputs, then prose) with no shared mechanism between them. A pre-commit
+regex over the ID shapes used here — `R[0-9]{7}`, `MAP[0-9]{7,}`, `PM-[A-Z]{2}[_-]`, `AMPAD_[A-Z]+_[0-9]+`,
+`BF-[0-9]{4}` — would catch both. Not written; see `HANDOFF.md` "Known issues".
+
+**Next — the history still holds them.** Every ID-carrying commit is already on `origin`
+(private), and **the taint starts at the ROOT commit**, so there is no graft point to rewrite
+from: all 31 commits get new SHAs. Local `main` is 6 ahead of `origin/main` and 0 behind, so
+nobody else has pushed and a force-push is safe. `git filter-repo --replace-text` with the
+backticked forms (see below) is verified to remove all of them with zero collateral.
+**Do it before the repo goes public**; the working tree being clean is not the same as the repo
+being clean, and that distinction is exactly what the 2026-08-21 entry had to learn the first time.
+
+**The rules must match the BACKTICKED forms for the bare numbers.** Replacing the bare Mayo
+individualID as a plain literal would corrupt five unrelated five-digit figures in this log that
+merely contain it as a substring, and one occurrence of the DivCo one is a sample count rather
+than an ID. Checked across all 234 historical blobs: every real-ID occurrence of a bare number is
+backticked and every collateral occurrence is not, so the backticked form separates them exactly.
+The 748 in "~748 Rush↔ROSMAP" is a COUNT and must survive the rewrite — it is the one id-shaped
+string deliberately left alone, and the rules are verified to leave it.
+
+The rule set itself must not name the IDs, or it becomes a leak and the rewrite mangles its own
+documentation. Keep it out of the repo — `scratchpad/replacements.txt`, not a tracked file.
 
 ---
 
@@ -2025,7 +2091,7 @@ compares against measurements instead of an assertion. The old number is explici
 underived so it does not get resurrected.
 
 **Small residual for the clinical side, not blocking.** The two BR-DSNWGS duplicates are
-cross-PROGRAM (retained partners `<AMP-AD IID>` AJ and `<AMP-AD IID>` EUR carry AMP-AD-pattern numeric IIDs).
+cross-PROGRAM (both retained partners — one AJ, one EUR — carry AMP-AD-pattern numeric IIDs).
 Which genome to keep is settled by the above; which *label* the surviving donor carries is not,
 since one copy may be AD-by-neuropathology and the other PD. Two samples, so it cannot move a
 GWAS, but it is a genuine AD-vs-PD label conflict and belongs in the §12 reconciliation.
@@ -2070,7 +2136,7 @@ dropped samples' call rates matched to four decimal places. Nothing in the pipel
 
 **Still open, unaffected by this change:** the `duplicate` count of 319 against
 `05_excludelist.py`'s "~748 Rush↔ROSMAP" expectation, and the two cross-program BR duplicates
-(`<AMP-AD IID>`, `<AMP-AD IID>`) whose phenotype labels need resolving in `genome_crosswalk.csv`.
+(clusters dup19 and dup27) whose phenotype labels need resolving in `genome_crosswalk.csv`.
 
 ---
 
@@ -2114,13 +2180,13 @@ methods, not a bug**: BR contributes to roughly half the association set, and it
 the AMP-PD side of the primary contrast, with step 7's differential-missingness filter as the
 only mitigation.
 
-**Also found — the 2 BR duplicates are cross-PROGRAM.** Retained partners are `<AMP-AD IID>` (AJ) and
-`<AMP-AD IID>` (EUR) — numeric IIDs, which is the AMP-AD pattern, not AMP-PD. So the same donor appears
-in AMP-AD and in AMP-PD's postmortem callset. That is a **phenotype conflict in the primary
-contrast**, not merely a genotype duplicate: one copy may carry an AD label and the other PD.
-Resolve against `genome_crosswalk.csv` before the grain is rebuilt. BR IIDs are
-`PM-MS_<5d>-BLM0-PVC-DWGS` (cluster dup19, n=3) and `PM-MS_<5d>-BLM0-PVC-DWGS` (dup27, n=2);
-the `PM-MS_` prefix and the `gs://amp-pd-receipt-2026/mssm/` source both point at Mount Sinai,
+**Also found — the 2 BR duplicates are cross-PROGRAM.** The retained partners are one AJ and one
+EUR sample carrying numeric IIDs, which is the AMP-AD pattern, not AMP-PD. So the same donor
+appears in AMP-AD and in AMP-PD's postmortem callset. That is a **phenotype conflict in the
+primary contrast**, not merely a genotype duplicate: one copy may carry an AD label and the
+other PD. Resolve against `genome_crosswalk.csv` before the grain is rebuilt. The two BR IIDs
+are the `PM-MS_`-prefixed members of KING clusters dup19 (n=3) and dup27 (n=2); that prefix and
+the `gs://amp-pd-receipt-2026/mssm/` source both point at Mount Sinai,
 which also contributes MSBB on the AMP-AD side.
 
 **Superseded numbers.** The step 5 run below was on the 0.05 common set: 839 excluded (498

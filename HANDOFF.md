@@ -304,6 +304,22 @@ True now, and a run breaks if any of them changes. Not open work.
     Note the cluster also holds superseded copies under `by_ancestry_qc_pre_pcfix_20260726/` and
     `plotdata/`; `review/methods_numbers.py` names the canonical one it read.
 
+13. **The repo is NOT yet safe to make public — the working tree is clean, the history is not.**
+    Scrubbed 2026-09-18: ~30 real donor/specimen IDs were sitting in prose as worked examples
+    (`demo_sample_check/README.md`'s crosswalk-rule table was the worst — its rows are cross-dataset
+    ID→ID mappings). All replaced with format placeholders. **They remain in past commits, which are
+    already pushed to `origin`** (private, so contained). The taint starts at the **root commit**,
+    so all 31 commits get new SHAs — there is no graft point. Local `main` is 6 ahead of
+    `origin/main` and 0 behind, so a force-push is safe. Do it before flipping the repo public,
+    and re-point the cluster checkout afterwards (its history becomes unrelated).
+
+14. **No guard covers identifiers in PROSE.** `.gitignore` governs paths; `nb_guard.py` governs
+    notebook outputs. Both were built after the 2026-08-21 incident and both still work — neither
+    can see an ID typed into a markdown table. That is now two leaks with no shared mechanism. A
+    pre-commit regex over the shapes actually used here — `R[0-9]{7}`, `MAP[0-9]{7,}`,
+    `PM-[A-Z]{2}[_-]`, `AMPAD_[A-Z]+_[0-9]+`, `BF-[0-9]{4}`, `[0-9]{4,6}_DLPFC` — would catch both
+    classes. Not written; `scripts/hooks-pre-commit` is where it goes.
+
 **Closed since 2026-08-19**, all with their reasoning in `PROJECT_LOG.md`'s index: the pheno/covar
 duplication (§13 is the sole definition), the ctrl-vs-ctrl duplication (`review/mask_cohort_artifacts.py`
 deleted), step 6's two-pass shape (one pass), the HWE excess-over-chance gate (4,415 → 4,187), and

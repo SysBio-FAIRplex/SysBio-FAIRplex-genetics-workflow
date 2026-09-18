@@ -159,9 +159,10 @@ mitrosmap 2. Listed in `out/unmatched_donors.txt`.
 
 **1. AMP-PD postmortem: 97 and 97, but not the same 97.** The BR-DSNWGS pgen has 97
 samples and the PD pseudobulk has 97 donors — the overlap is **94**. Three donors have
-pseudobulk but never made the pgen (`PM-<site>_<id>`, `PM-<site>_<id>`, `PM-<site>_<id>` — all
-present in the WGS inventory, so they were lost between inventory and delivery); three
-others have genotypes but no pseudobulk (`PM-<site>_<id>`, `PM-<site>_<id>`, `PM-<site>_<id>`).
+pseudobulk but never made the pgen — all three are present in the WGS inventory, so they
+were lost between inventory and delivery; three others have genotypes but no pseudobulk.
+(Both trios are recoverable from `out/`, which stays out of git; the IDs are
+controlled-access and are deliberately not reproduced here.)
 Comparing counts alone reads as a perfect 97/97. After QC, 84 remain.
 
 **2. Ancestry is unstable — across callsets, and across genotools runs.** Two independent
