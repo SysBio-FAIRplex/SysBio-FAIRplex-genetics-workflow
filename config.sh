@@ -9,7 +9,7 @@
 
 # ── the one root ─────────────────────────────────────────────────────────────
 # Code and data share a root: this file sits at the top of the project, and data/ sits
-# beside it. On the cluster that is /data/CARDPB2/sysbio/wgs; on a laptop it is wherever
+# beside it. On the cluster that is /data/CARDPB2/sysbio/wgs/amp-ad-pd-wgs-gwas; on a laptop it is wherever
 # the repo was cloned. `data/` may be a symlink to a larger allocation — paths below
 # resolve through it either way.
 #

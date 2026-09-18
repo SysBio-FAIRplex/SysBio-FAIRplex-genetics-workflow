@@ -53,6 +53,10 @@ number, or symptom, then read the dated entry.
 | three AJ contrasts report `lambda_gc` exactly **0.0000** | **non-convergence, not deflation.** `AD_vs_DLB`, `PD_vs_AD` and `control_amppd_vs_control_ampad` are AJ's cross-callset contrasts; every variant returns `ERRCODE=UNFINISHED` with *P* ≈ 1, so the median chi-square is ~0. AJ PC1 is η² 0.962 on callset and enters as a covariate, so a covariate separates the arms almost perfectly. All three are below the viability floor and none is reported | 2026-08-24 |
 | METHODS §10's "roughly six times any cross-program contrast" | **false as written.** EUR `PD_vs_AD` removed 387,207 to differential missingness, more than `PD_vs_DLB`'s 353,068, and was omitted from the comparison set. The mechanism argument is unaffected; only the multiplier failed. Rewritten as "largest within-program removal, same magnitude as the primary cross-program contrast" | 2026-08-24 |
 | METHODS §6.4's "0.058% of variants" vs PROJECT_LOG's "0.05%" | both are the same quantity with no stated denominator. 0.058% = 4,385 / 7,538,809, measured on the **ungated 4,415** list; the live gated list is 4,187. Both round to 0.06% of EUR's post-QC variants, which is now what every doc says | 2026-08-24 |
+| the **94-genome gap**, 13,428 supplied vs 13,334 merged | **not QC.** The normalized filesets still sum to 13,428, so nothing is dropped upstream of the merge. 94 donors sit in both `wgs_harm` and `divco_hs` under one sample ID and plink **fuses** them into one sample each; every other callset pair is disjoint. 87 survive exclusion as `divco_hs|wgs_harm` grain rows. `METHODS.md` §3 said GenoTools QC for weeks | 2026-09-17 (night), 2026-08-19 |
+| §6.3's gate table says 328 EUR `wgs_harm` controls, the grain says 373 | **both right, different populations.** 328 is the `.keep` 6a handed plink (its log: `--keep: 328 samples remaining`); 373 is grain membership, of which 33 fused and 340 sole-source. 6a predates `analysis_grain.py` §13. Check now reads the `.keep`. **Open: the 340 vs 328 remainder is 12 samples** | 2026-09-17 (night) |
+| `methods_numbers.py` derives 0 for the per-callset merge sum | `merge_list.txt` holds only the three SECONDARY stems (`wgs_harm` enters via `--bfile`) **and** absolute paths that went stale when the root moved. Now sources `NORM_*` from `config.sh` | 2026-09-17 (night) |
+| a `methods_numbers.py` group reports UNAVAILABLE on the cluster but passes on a laptop | it was reading `results/`, where laptop *copies* land. Canonical outputs are under `data/merged/by_ancestry_qc/`. Hid 23 of 77 checks. **More ok on a laptop than on the cluster is always this bug** | 2026-09-17 (night) |
 
 ---
 
@@ -167,6 +171,102 @@ known issue 2 and the 2026-08-21 entry below.
   drops. Enrollment overlap is a superset of sequencing overlap.
 - **Step 4's `COMMON_GENO=0.005` is load-bearing** — it must stay below the smallest callset's share
   of the cohort (BR is 97/13,334 = 0.0073). Re-check if a callset under ~0.5% is ever added.
+
+---
+
+## 2026-09-17 (night) — the cluster root moved into a named repo directory. `METHODS.md` §3's 94-genome gap was misattributed for weeks, and the check that would have caught it was structurally unable to.
+
+**Did.** Moved the cluster checkout from `/data/CARDPB2/sysbio/wgs` into
+`/data/CARDPB2/sysbio/wgs/amp-ad-pd-wgs-gwas`, so the repo root no longer sits directly on top of
+the 4.2 TB data tree. `mv` within the same `/vf` mount is a rename, so `data/` cost nothing to
+move. HEAD unchanged at `07eaa3e`, `config.sh` self-location verified at the new root, and the new
+directory inherited the parent's ACL (`nallsm`, `wellerca`, `tindallcm` all retained — checked,
+not assumed).
+
+**The motivation was blast radius, not tidiness.** The old layout is what produced the zero-byte
+`.gitignore` near-miss earlier today: a checkout root sitting on the allocation, one `git add -A`
+away from staging 4.2 TB. Nesting the checkout ends that class of accident.
+
+**`.venv` cannot be moved** — `pyvenv.cfg`, `bin/activate` and every console-script shebang hold
+the absolute path. There was also **no `requirements.txt` anywhere in the project**, so the
+environment existed only as installed bytes on one disk. Froze it first (`requirements.lock.txt`,
+115 packages, all plain PyPI pins — nothing from git or a local path), then rebuilt. The old venv
+was moved aside rather than deleted until the rebuild was verified, because compute nodes have no
+internet and a failed `pip` would have left nothing to fall back on.
+
+**Found — `METHODS.md` §3 attributed the 94-genome gap to the wrong mechanism.** It said the
+13,428 → 13,334 difference was "sample-level GenoTools QC, applied per callset before the merge and
+therefore upstream of it." The four **normalized** filesets — step 2 output, downstream of
+GenoTools — still sum to 13,428. Nothing is dropped upstream of the merge. The 94 are donors
+carried in both `wgs_harm` and `divco_hs` under the same FID/IID, which plink1.9 treats as one
+individual and **fuses** into a single merged sample. Every other callset pair is disjoint:
+
+| pair | shared IDs |
+|---|---|
+| `wgs_harm` ∩ `divco_hs` | **94** |
+| every other pair | 0 |
+
+**This project already knew.** The 2026-08-19 grain entry records "**87 fused**
+`divco_hs|wgs_harm` rows (two genomes, one merged sample)" and reconciles 12,582 − 87 = 12,495; the
+2026-08-19 eta² entry ran the sensitivity three ways (`drop BR + fused` 0.984, `fused → divco_hs`
+0.983, `fused → wgs_harm` 0.982). The log was right and `METHODS.md` was wrong, for weeks, about
+the same 94 genomes. 94 at merge → 87 after exclusion is the 7 lost to steps 5–6.
+
+**Found — the check that exists to catch exactly this could never have passed.** `methods_numbers.py`
+summed the `.fam` files named in `merge_list.txt` and compared to 13,334. Two independent defects:
+
+- `merge_list.txt` holds only the three **SECONDARY** stems — `wgs_harm` enters via `--bfile`
+  (`03_merge.sh:26`), so the sum is structurally short by one callset and can never reach either
+  13,428 or 13,334.
+- Its paths are absolute, written at run time, and went stale the moment the root moved. The check
+  reported `MISSING` for all three and derived 0.
+
+Neither was discoverable before today, because **the script had never run on the cluster** — it
+arrived 2026-09-17 with the git conversion, as a *deletion*. Rewritten to source the four `NORM_*`
+stems from `config.sh` (the one place that resolves them) and to assert three separate things: the
+inputs sum to 13,428, the merge is 13,334, and the gap equals an independently derived collision
+count.
+
+**Found — two more path bugs of the same shape, and this one hid 23 checks.** `gwas_summary.csv`
+and `retained_samples_manifest.csv` were looked up only under `results/`, which is where *laptop
+copies* land. The pipeline writes them under `data/merged/by_ancestry_qc/` (`07_gwas.sh:35-37`,
+`config.sh:117`). On the cluster the §7 group collapsed to a single UNAVAILABLE — 23 of 77 checks
+silently not run — while the laptop passed 23 of them off a copy. **The totals line was the tell:
+70 ok on a laptop against 41 on the cluster, which cannot be true if the cluster is where the
+artifacts live.** Both now check the canonical path first and print which source they used.
+
+**KILLED — "§6.3's 328 is a stale number; the grain says 373."** It is not, and the check was
+comparing two different populations. The `.keep` file 6a handed plink is 328 lines and the cell's
+own plink log says `--keep: 328 samples remaining`. The gate table describes the HWE cell; the
+grain describes the study. 6a ran inside step 6, **before** `analysis_grain.py` §13 became the sole
+definition of who is a case, so the two were never the same set. The §6.3 check now reads the
+`.keep` (CLAUDE.md rule 6 — resolve against the per-cell intermediates), not the grain.
+
+**KILLED, a step earlier — "the 328/373 gap is fused rows counted two ways."** Membership-splitting
+`source_callset` gives 373 EUR `wgs_harm` controls, of which 33 are fused and 340 sole-source.
+Neither is 328. Recorded because it is the obvious hypothesis and it is wrong.
+
+**Changed.** `METHODS.md` §3 rewritten to state fusion, name the pair, and carry the 87 surviving
+grain rows with the eta² sensitivity. `README.md` ×3, `HANDOFF.md`, `config.sh` header comment
+repointed to the new root. `merge_list.txt` prefix `sed`-ed to the new root with the original kept
+as `merge_list.txt.pre-move` — nothing reads it now, but a step-3 rerun would have failed on it.
+
+**Open, and cheap.** 340 sole-source EUR `wgs_harm` controls in the grain against 328 in 6a's cell
+— 12 samples whose case/control status differs between 6a's inputs and §13's definition. §6.3's
+number is correct as printed; what is unknown is whether any of those 12 are now *cases* sitting
+inside a test that `METHODS.md` justifies as controls-only (the justification being that case
+ascertainment distorts HWE at a real disease locus). Not a results risk — the 4,187 list is what it
+is — but it belongs in the write-up if the answer is nonzero.
+
+**Also open: `results/gwas/gwas_summary.csv` is gitignored and the laptop's copy is the only one
+outside `data/merged/`.** Every §7 number traces to it. This is the same shape as the eta² baseline
+that survived its overwrite only because someone had typed the numbers into this log by hand.
+
+**Next.**
+1. Bundle to the cluster and re-run `python3 review/methods_numbers.py --strict` there — the §1/§3,
+   §6.3 and §7 groups should all resolve for the first time.
+2. Settle the 12-sample delta above.
+3. Rename the laptop checkout to `amp-ad-pd-wgs-gwas` to match the remote.
 
 ---
 

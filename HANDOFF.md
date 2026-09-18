@@ -17,7 +17,7 @@ no history (`PROJECT_LOG.md` — grep its resolved-anomaly index before investig
 
 ## One root
 
-Code and data share a root: on biowulf `/data/CARDPB2/sysbio/wgs`, on a laptop wherever the repo
+Code and data share a root: on biowulf `/data/CARDPB2/sysbio/wgs/amp-ad-pd-wgs-gwas`, on a laptop wherever the repo
 was cloned. **Nothing in this project contains an absolute path** — `config.sh`,
 `clinical_common.py`, `05_excludelist.py`, `ancestry_qc_manifest.py` and `wgs_core.ipynb` each
 derive the root from their own location. To move the project, copy the folder. (The last two
@@ -239,10 +239,11 @@ True now, and a run breaks if any of them changes. Not open work.
 
    | what it settles | source it needs |
    |---|---|
-   | the **94-genome gap** between §1's table (13,428) and §3's merge (13,334), per callset | the `.fam` files named in `merge_list.txt` |
+   | ~~the **94-genome gap** between §1's table (13,428) and §3's merge (13,334)~~ **SETTLED 2026-09-17 (night)** — not QC: 94 donors in both `wgs_harm` and `divco_hs` under one ID, fused by plink into one sample each. `METHODS.md` §3 rewritten | the four `NORM_*` `.fam` files, sourced from `config.sh` |
    | §6.4's **exact** excluded share of EUR variants — every doc now says 0.06%, sourced but rounded | `by_ancestry_qc/unfiltered/cohort_EUR_qc.bim` vs the stage-C bim |
    | the live exclusion list is 4,187 | `exclude_af_concordance.txt` |
    | **§6.3's gate table omits EUR `divco_hs`** — evaluated and below the bar, or never evaluated for want of controls? Silence is not an answer | the cluster `analysis_grain.csv`; the laptop's stale 11,918-row copy is refused by name |
+   | §6.3's **Controls** column (328 EUR `wgs_harm`) | the per-cell `af_concordance/EUR_control_*.keep`, **not** the grain — they are different populations, and sourcing it from the grain reported a false MISMATCH on 2026-09-17 |
    | the **step-6 job ID** behind the live 4,187 list, which every §6 number traces to | `bash scripts/runlog.sh --md` |
 
    Nothing here is a pipeline defect. They are write-up provenance, and they block the paper, not a
@@ -275,6 +276,23 @@ True now, and a run breaks if any of them changes. Not open work.
     No bucket is hardcoded anywhere; `GCS_DEST` is required at push time. Redistribution of
     individual-level AMP-PD genotypes is governed by the DUA — the script will not upload to a
     bucket it cannot prove is private, and that refusal has no override flag.
+
+11. **12 samples differ between 6a's control set and §13's definition.** The grain holds 340
+    sole-source EUR `wgs_harm` controls; 6a's HWE cell `.keep` holds 328. §6.3's printed number is
+    correct — the `.keep` is the artifact of record — but 6a ran inside step 6, before
+    `analysis_grain.py` §13 became the sole definition of who is a case, so the sets were never the
+    same. **What is unknown is whether any of the 12 are now cases**, sitting inside a test
+    `METHODS.md` justifies as controls-only on the grounds that case ascertainment distorts HWE at a
+    real disease locus. Not a results risk — the 4,187 list is fixed — but it belongs in the
+    write-up if the answer is nonzero. Compare the `.keep` IIDs against the grain's `pheno`.
+
+12. **`gwas_summary.csv` exists on the cluster under `data/merged/by_ancestry_qc/gwas/` and as a
+    gitignored laptop copy in `results/gwas/` — nowhere else.** Every §7 number traces to it. This
+    is the same shape as the eta² baseline that survived an overwrite only because the numbers had
+    been typed into `PROJECT_LOG.md` by hand. Decide whether it joins the `.gitignore` negations
+    (it is 45 lines, one row per contrast, aggregate — no IIDs) or gets a documented pull path.
+    Note the cluster also holds superseded copies under `by_ancestry_qc_pre_pcfix_20260726/` and
+    `plotdata/`; `review/methods_numbers.py` names the canonical one it read.
 
 **Closed since 2026-08-19**, all with their reasoning in `PROJECT_LOG.md`'s index: the pheno/covar
 duplication (§13 is the sole definition), the ctrl-vs-ctrl duplication (`review/mask_cohort_artifacts.py`

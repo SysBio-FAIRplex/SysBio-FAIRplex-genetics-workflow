@@ -25,6 +25,7 @@ Groups: doc (METHODS.md against itself), manifest, eta2, gwas, cluster.
 """
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,17 +66,80 @@ def wc(path):
         return sum(1 for _ in fh)
 
 
+def first_existing(*paths):
+    """The first path that exists, else None.
+
+    Two locations per artifact, deliberately. The pipeline writes under `data/merged/...`
+    (`config.sh` and `07_gwas.sh` agree on that), and copies get pulled down to `results/`
+    for plotting on a laptop. Checking only `results/` made every §7 claim UNAVAILABLE on the
+    cluster — where the real file is — while passing on the laptop copy. Canonical first.
+    """
+    for p in paths:
+        if p.exists():
+            return p
+    return None
+
+
+def norm_stems(root):
+    """The four step-2 output stems, read from config.sh — the one place that resolves them.
+
+    `merge_list.txt` cannot serve this purpose and an earlier version of this script was wrong
+    to try. It holds only the three SECONDARY stems (`wgs_harm` enters the merge via --bfile,
+    `03_merge.sh:26`), so a sum over it is structurally short by one callset; and it holds
+    absolute paths written at run time, which went stale when the project root moved on
+    2026-09-17. Sourcing config.sh is immune to both.
+    """
+    keys = ("NORM_WGS", "NORM_WB", "NORM_DC", "NORM_BR")
+    cfg = root / "config.sh"
+    if not cfg.exists():
+        return None
+    cmd = f'source "{cfg}" && ' + " && ".join(f'echo "${k}"' for k in keys)
+    try:
+        out = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    vals = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    if out.returncode != 0 or len(vals) != len(keys):
+        return None
+    return dict(zip(keys, vals))
+
+
+def id_collisions(stems):
+    """FID+IID pairs carried by more than one callset. plink1.9 treats these as one individual
+    and fuses them into a single merged sample, so they are exactly the 13,428 → 13,334 gap."""
+    seen, dup = set(), set()
+    for stem in stems.values():
+        fam = Path(stem + ".fam")
+        if not fam.exists():
+            return None
+        ids = set()
+        with open(fam) as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2:
+                    ids.add((parts[0], parts[1]))
+        dup |= seen & ids
+        seen |= ids
+    return len(dup)
+
+
 # ── manifest: who is in the study ────────────────────────────────────────────────────────
 
 def check_manifest(root):
-    path = root / "results" / "retained_samples_manifest.csv"
-    m = read_csv(path)
+    # config.sh:117 — the pipeline writes this under by_ancestry_qc/; results/ holds a copy.
+    path = first_existing(
+        root / "data" / "merged" / "by_ancestry_qc" / "retained_samples_manifest.csv",
+        root / "results" / "retained_samples_manifest.csv",
+    )
+    m = read_csv(path) if path else None
     if m is None:
         for claim, asserted in [("§4 retained samples", 12495),
                                 ("§5 EUR n", 10135), ("§5 AJ n", 1518), ("§5 AAC n", 226),
                                 ("§5 AFR n", 191), ("§5 AMR n", 185), ("§5 CAH n", 106),
                                 ("§6.3 wgs_harm EUR samples", 1540)]:
-            unavailable("manifest", claim, asserted, f"missing {path.relative_to(root)}")
+            unavailable("manifest", claim, asserted,
+                        "missing retained_samples_manifest.csv under "
+                        "data/merged/by_ancestry_qc/ or results/")
         return
 
     record("§4", "retained samples", 12495, len(m))
@@ -148,12 +212,18 @@ def check_eta2(root):
 # ── gwas: contrasts, inflation, differential missingness ─────────────────────────────────
 
 def check_gwas(root):
-    path = root / "results" / "gwas" / "gwas_summary.csv"
-    g = read_csv(path)
+    # NOT by_ancestry_qc_pre_pcfix_*/ — that is a superseded generation still on the cluster.
+    path = first_existing(
+        root / "data" / "merged" / "by_ancestry_qc" / "gwas" / "gwas_summary.csv",
+        root / "results" / "gwas" / "gwas_summary.csv",
+    )
+    g = read_csv(path) if path else None
     if g is None:
         unavailable("§7", "all contrast-level claims", "44 ran / 17 viable",
-                    f"missing {path.relative_to(root)}")
+                    "missing gwas_summary.csv under data/merged/by_ancestry_qc/gwas/ "
+                    "or results/gwas/")
         return
+    print(f"  §7 source: {path.relative_to(root)}")
 
     viable = g[g.viable_ge100 == "yes"]
     record("§7", "contrasts run", 44, len(g))
@@ -210,29 +280,40 @@ def check_gwas(root):
 def check_cluster(root):
     merged = root / "data" / "merged"
 
-    # §1 vs §3: the callset table sums to 13,428 and the merge reports 13,334. The 94-genome
-    # difference is per-callset GenoTools QC, and the .fam files named in merge_list.txt are
-    # exactly the inputs the merge consumed.
-    mlist = merged / "merge_list.txt"
-    if not mlist.exists():
-        unavailable("§1/§3", "per-callset pre-merge counts sum to 13,334", 13334,
-                    f"missing {mlist}")
+    # §1 vs §3: the four normalized filesets sum to 13,428 and the merge reports 13,334. The
+    # 94-genome difference is NOT QC — nothing is dropped upstream of the merge. It is 94 donors
+    # carried in both wgs_harm and divco_hs under one sample ID, which plink fuses into a single
+    # merged sample. 87 survive exclusion as `divco_hs|wgs_harm` rows in the grain
+    # (PROJECT_LOG 2026-08-19, 2026-09-17). Three separate claims, so three separate records:
+    # the inputs sum, the merge output, and the gap equals the collision count.
+    stems = norm_stems(root)
+    if stems is None:
+        unavailable("§1/§3", "per-callset counts sum to 13,428", 13428,
+                    f"could not source {root / 'config.sh'} for the NORM_* stems")
     else:
         total, breakdown = 0, []
-        for line in mlist.read_text().split():
-            fam = Path(line if line.endswith(".fam") else line + ".fam")
-            if not fam.is_absolute():
-                fam = merged / fam
-            n = wc(fam)
-            if n is None:
-                breakdown.append((fam.name, None))
-            else:
+        for key, stem in stems.items():
+            n = wc(Path(stem + ".fam"))
+            breakdown.append((key, Path(stem).name, n))
+            if n is not None:
                 total += n
-                breakdown.append((fam.name, n))
         print("  per-callset .fam counts entering the merge:")
-        for name, n in breakdown:
-            print(f"    {name:60s} {n if n is not None else 'MISSING'}")
-        record("§1/§3", "per-callset counts sum to the merge", 13334, total)
+        for key, base, n in breakdown:
+            print(f"    {key:9s} {base:50s} {n if n is not None else 'MISSING'}")
+        if any(n is None for _, _, n in breakdown):
+            unavailable("§1/§3", "per-callset counts sum to 13,428", 13428,
+                        "a normalized .fam is missing — see the counts above")
+        else:
+            record("§1/§3", "per-callset counts sum to 13,428", 13428, total)
+            n_merged = wc(merged / "cohort_merged.fam")
+            if n_merged is None:
+                unavailable("§3", "merged samples", 13334,
+                            f"missing {merged / 'cohort_merged.fam'}")
+            else:
+                record("§3", "merged samples", 13334, n_merged)
+                record("§3", "genomes fused at merge (13,428 − 13,334)", 94, total - n_merged)
+            dups = id_collisions(stems)
+            record("§3", "sample IDs shared across callsets", 94, dups)
 
     # §6.4's denominator. The unfiltered stage-A bim is EUR's post-QC variant count; the
     # difference against the stage-C bim is how many of the 4,187 were actually in EUR.
@@ -275,10 +356,24 @@ def check_cluster(root):
             for cs in ("wgs_harm", "wb_dwgs", "divco_hs", "br_dsnwgs"):
                 n = sum(1 for s in eur_ctrl[cs_col] if cs in str(s).split("|"))
                 print(f"    {cs:12s} {n:6d}{'   below MIN_CELL' if n < 100 else ''}")
-            record("§6.3", "EUR wgs_harm controls", 328,
-                   sum(1 for s in eur_ctrl[cs_col] if "wgs_harm" in str(s).split("|")))
-            record("§6.3", "EUR wb_dwgs controls", 3064,
-                   sum(1 for s in eur_ctrl[cs_col] if "wb_dwgs" in str(s).split("|")))
+    # The gate table's Controls column is NOT a grain count, and sourcing it from the grain
+    # reported a false MISMATCH on 2026-09-17 (asserted 328, derived 373). Two different
+    # populations: 6a ran inside step 6, before analysis_grain.py §13 became the sole
+    # definition of who is a case, and its cells are the .keep files it handed plink. The
+    # .keep is the artifact of record (CLAUDE.md rule 6) — 328, and the cell's own plink log
+    # says "--keep: 328 samples remaining". The grain counts above are printed as context and
+    # deliberately not compared: membership-splitting on source_callset gives 373 for EUR
+    # wgs_harm, of which 33 are fused divco_hs|wgs_harm rows and 340 sole-source. Neither is
+    # 328, and neither is meant to be.
+    afc = merged / "af_concordance"
+    for callset, asserted in (("wgs_harm", 328), ("wb_dwgs", 3064)):
+        keep = afc / f"EUR_control_{callset}.keep"
+        n = wc(keep)
+        if n is None:
+            unavailable("§6.3", f"EUR {callset} controls (HWE cell)", asserted,
+                        f"missing {keep.relative_to(root)}")
+        else:
+            record("§6.3", f"EUR {callset} controls (HWE cell)", asserted, n)
 
     # §6.4's ~7x duplicate-discordance enrichment. It is a computation, not a lookup —
     # `--discordance` runs it. See measure_discordance().
@@ -311,7 +406,10 @@ def check_doc(root):
                 supplied += int(cell)
                 break
     record("§1", "callset table sums to genomes as supplied", 13428, supplied)
-    record("§1/§3", "supplied − merged = the stated QC loss", 94, supplied - 13334)
+    # Not a QC loss — nothing is dropped upstream of the merge. These are cross-callset ID
+    # collisions that plink fuses into one sample each; check_cluster() derives the same 94
+    # independently from the .fam files.
+    record("§1/§3", "supplied − merged = genomes fused at merge", 94, supplied - 13334)
 
     limitations = text.split("## 10. Limitations")[-1]
     record("§10", "bolded limitations", 7,

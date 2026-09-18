@@ -118,9 +118,14 @@ chromosome codes and `chr:pos:REF:ALT` variant identifiers — so that merge key
 non-concatenating `--pmerge-list` is unimplemented in the available build), yielding
 **172,497,055 variants × 13,334 samples**.
 
-The §1 table lists 13,428 genomes as supplied. The 94-genome difference is sample-level GenoTools
-QC, applied per callset before the merge and therefore upstream of it; `br_dsnwgs` lost none of its
-97.
+The §1 table lists 13,428 genomes as supplied, and the four normalized filesets entering the merge
+still sum to 13,428 — so no sample was dropped upstream of it. The 94-genome difference is **94
+donors carried in both `wgs_harm` and `divco_hs` under the same sample ID**, which PLINK treats as
+one individual and fuses into a single merged sample (genotype conflicts set to missing). They are
+the only such collisions: every other callset pair is disjoint, and `br_dsnwgs` shares no ID with
+any of the other three. 87 of the 94 survive sample exclusion and carry a multi-valued
+`source_callset` of `divco_hs|wgs_harm` in the analysis grain; folding them into either parent
+callset moves AJ PC1 eta² by at most 0.002 (0.984 → 0.983 / 0.982).
 
 ## 4. Relatedness and sample exclusion
 

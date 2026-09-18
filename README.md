@@ -19,7 +19,7 @@ own homes. One job each:
 | `RUNLOG.md` | which jobs ran and how they ended. Generated: `bash scripts/runlog.sh --md > RUNLOG.md` |
 | `wgs_core.ipynb` | the **executable** run order — it runs on biowulf and submits every step |
 
-**One root.** Code and data share a root — on biowulf `/data/CARDPB2/sysbio/wgs`, on a laptop
+**One root.** Code and data share a root — on biowulf `/data/CARDPB2/sysbio/wgs/amp-ad-pd-wgs-gwas`, on a laptop
 wherever the repo was cloned. Nothing in the project holds an absolute path: `config.sh` derives
 the root from its own location, and `clinical_common.py` does the same. To move it, copy the folder.
 
@@ -33,15 +33,20 @@ the root from its own location, and `clinical_common.py` does the same. To move 
 - **Cluster**: NIH Biowulf (SLURM)
 - **Transfer node**: NIH Helix (used for Synapse downloads)
 - **Tools**: plink2 v2.00a6LM, plink1.9, bcftools, liftOver, GenoTools v1.3.6, Synapse CLI
-- **Python environment**: `.venv` at `/data/CARDPB2/sysbio/wgs/.venv` (Python 3.11, module `python/3.11`)
+- **Python environment**: `.venv` at `/data/CARDPB2/sysbio/wgs/amp-ad-pd-wgs-gwas/.venv` (Python 3.11, module `python/3.11`)
 - **setuptools**: must be pinned to 67.8.0 for `pkg_resources` to work in sbatch
+- **`requirements.lock.txt`**: 115 pinned packages, frozen from the working cluster venv
+  2026-09-17. **It does not contain `setuptools`** — `pip freeze` omits it — so rebuilding is
+  `python3 -m venv .venv && pip install setuptools==67.8.0 && pip install -r requirements.lock.txt`,
+  in that order. Before this file existed the environment lived only as installed bytes on one
+  disk; a venv cannot be moved, so that made the project root effectively immovable.
 
 ---
 
 ## Directory Structure
 
 ```
-/data/CARDPB2/sysbio/wgs/
+/data/CARDPB2/sysbio/wgs/amp-ad-pd-wgs-gwas/
   bin/
     liftOver                                         ← UCSC liftOver binary
     hg19ToHg38.over.chain.gz                         ← liftover chain file
