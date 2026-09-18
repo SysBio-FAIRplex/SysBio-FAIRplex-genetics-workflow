@@ -38,7 +38,7 @@ or `joint_calls/`.
 | `config.sh` | every path, derived from its own location. `submit.sh` — sbatch wrapper. |
 | `scripts/01`–`08` | genotools, normalize, merge, relatedness, excludelist, ancestry QC, GWAS, ctrl-vs-ctrl. |
 | `scripts/09_amppd_subset.sh` | **release, not pipeline.** Subsets the AMP-PD donors out of step 6 stage C into a staging tree. sbatch on biowulf; no network code, no gcloud dependency. Written 2026-09-17, **never run**. |
-| `scripts/10_amppd_push.sh` | publishes that tree to GCS. Runs on **helix**, refuses inside a SLURM allocation. Written 2026-09-17, **never run**. |
+| `scripts/10_amppd_push.sh` | publishes that tree to GCS. Runs on **helix**, refuses inside a SLURM allocation. Written 2026-09-17. |
 | `scripts/af_concordance_build.{py,sh}` | step 6 **stage B**, in-job. The `.sh` is for re-tuning knobs only. |
 | `scripts/ancestry_qc_manifest.py` | step 6 stage E: `retained_samples_manifest.csv`, once per generation. |
 | `scripts/gene_annot.py` + `ref/refFlat.txt` | the single source of locus coordinates; a read-only CLI with no pipeline callers. `--at chr19:44908684` |

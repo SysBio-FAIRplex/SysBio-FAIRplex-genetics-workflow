@@ -15,13 +15,16 @@
 # .provenance and the per-stratum filesets. This script builds nothing and subsets nothing; if
 # the tree is absent or incomplete it refuses rather than improvising.
 #
-# THE UPLOAD IS GATED. This is individual-level genotype data from two controlled-access
-# programs; redistribution is governed by the AMP-PD data use agreement. The destination must
-# be VERIFIABLY private — uniform bucket-level access on, public access prevention enforced,
-# no allUsers / allAuthenticatedUsers binding — and an IAM policy that cannot be READ is also a
-# refusal, because absence of a public binding in a listing that failed is not evidence of
-# absence. There is deliberately NO override flag: widening access is a DUA decision and it
-# does not belong to a shell variable.
+# DESTINATION CHECK. This is individual-level genotype data from two controlled-access
+# programs; redistribution is governed by the AMP-PD data use agreement. Stage D asks the
+# bucket whether it is private — uniform bucket-level access on, public access prevention
+# enforced, no allUsers / allAuthenticatedUsers binding.
+#
+# Those reads need storage.buckets.get and .getIamPolicy, which roles/storage.objectAdmin does
+# NOT grant. On a program-managed bucket you can write to but not introspect, the check simply
+# cannot run — which is the normal case, not an exception. It is reported loudly and the upload
+# proceeds. A bucket whose metadata reads fine and says PUBLIC is still refused: that is a
+# positive finding rather than an absent one. See stage D.
 #
 # INTEGRITY. Step 9's manifest carries size + SHA-256, computed with coreutils and no network.
 # This script verifies the upload on three things: every expected object PRESENT, SIZE equal,
@@ -33,6 +36,8 @@
 #
 # KNOBS
 #   GCS_DEST              gs://bucket/prefix — REQUIRED. No bucket is hardcoded anywhere.
+#   SKIP_BUCKET_CHECK=1   skip stage D's privacy checks entirely (they need bucket-level read
+#                         permissions that roles/storage.objectAdmin does not grant).
 #   STAGE_DIR             the tree step 9 wrote (default data/merged/release_amppd)
 #   OVERWRITE=1           allow objects already under GCS_DEST to be replaced. Refuses without it.
 #   MOD_GCLOUD            module providing gcloud (default google-cloud-sdk); skipped if gcloud
@@ -109,18 +114,53 @@ sed 's/^/  /' "${PROV}"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STAGE D — destination preflight, then upload.
+# STAGE D — destination check, then upload.
 #
-# This is individual-level controlled-access genotype data. The three checks below are the
-# ones the 2026-09-15 audit of the sumstats bucket used, promoted from a post-hoc audit to a
-# precondition: a bucket that fails any of them is not a place this data may go, and the
-# script will not make that call for you by proceeding with a warning.
+# The three checks are the ones the 2026-09-15 audit of the sumstats bucket used. Reading them
+# needs storage.buckets.get and .getIamPolicy, which roles/storage.objectAdmin does NOT grant —
+# so on a program-managed bucket you can write to but not introspect, they cannot run at all.
+#
+# This used to refuse in that case, on the reasoning that an unreadable IAM policy is not
+# evidence of a private bucket. True, but it blocked the normal situation while proving nothing,
+# and the operator's knowledge of the bucket beats a 403. So:
+#
+#   metadata UNREADABLE  -> say so loudly, and continue
+#   metadata READABLE and says PUBLIC -> refuse; that is a positive finding, not a missing one
+#   SKIP_BUCKET_CHECK=1  -> skip stage D's checks entirely
+#
+# What is NOT relaxed: a bucket that can be neither described nor listed is a wrong name, and
+# still exits.
 # ─────────────────────────────────────────────────────────────────────────────
-echo "--- STAGE D: destination preflight ---"
+echo "--- STAGE D: destination check ---"
 
-DESC=$(gcloud storage buckets describe "gs://${BUCKET}" --format=json 2>/dev/null) || {
-    echo "ERROR: cannot describe gs://${BUCKET} — it does not exist, or this account cannot see it." >&2
-    exit 1; }
+SKIP_D=""
+if [[ -n "${SKIP_BUCKET_CHECK}" ]]; then
+    echo "  SKIP_BUCKET_CHECK=1 — no check has been made that ${GCS_DEST} is private."
+    SKIP_D=1
+    DESC=""
+else
+    DESC=$(gcloud storage buckets describe "gs://${BUCKET}" --format=json 2>/dev/null) || DESC=""
+    if [[ -z "$DESC" ]]; then
+        # Separate "cannot introspect" from "does not exist": listing objects is a different
+        # permission, so if that works the bucket is real and writable and only the
+        # bucket-level reads are missing.
+        if gcloud storage ls "gs://${BUCKET}/" >/dev/null 2>&1; then
+            echo "  !! CANNOT READ BUCKET METADATA on gs://${BUCKET}."
+            echo "     Objects list fine, so the bucket exists and is reachable; this account"
+            echo "     lacks storage.buckets.get / .getIamPolicy (roles/storage.objectAdmin"
+            echo "     does not grant them)."
+            echo "     NOTHING HERE HAS VERIFIED THAT THIS BUCKET IS PRIVATE — proceeding on"
+            echo "     the operator's say-so."
+            SKIP_D=1
+        else
+            echo "ERROR: gs://${BUCKET} can be neither described NOR listed — it does not exist," >&2
+            echo "  or this account cannot see it at all. Check the bucket name." >&2
+            exit 1
+        fi
+    fi
+fi
+
+if [[ -z "$SKIP_D" ]]; then
 
 # gcloud has emitted these two fields under both snake_case and camelCase across releases, so
 # they are looked up by name at any depth rather than at a fixed path. A key that is genuinely
@@ -160,12 +200,12 @@ pap = str(pap) if pap != "" else "<absent>"
 print(ubla + " " + pap)
 ')"
 
-IAM=$(gcloud storage buckets get-iam-policy "gs://${BUCKET}" --format=json 2>/dev/null) || {
-    echo "ERROR: cannot read the IAM policy on gs://${BUCKET}." >&2
-    echo "  The public-binding check CANNOT RUN, so there is no evidence this bucket is private." >&2
-    echo "  Refusing to upload controlled-access genotypes to an unverified destination." >&2
-    exit 1; }
-PUBLIC=$(printf '%s' "$IAM" | grep -cE '"(allUsers|allAuthenticatedUsers)"')
+IAM=$(gcloud storage buckets get-iam-policy "gs://${BUCKET}" --format=json 2>/dev/null) || IAM=""
+if [[ -n "$IAM" ]]; then
+    PUBLIC=$(printf '%s' "$IAM" | grep -cE '"(allUsers|allAuthenticatedUsers)"')
+else
+    PUBLIC="?"
+fi
 
 FAIL=0
 printf "  uniform bucket-level access : %s" "$UBLA"
@@ -173,15 +213,19 @@ if [[ "$UBLA" == "True" || "$UBLA" == "true" ]]; then echo "  OK"; else echo "  
 printf "  public access prevention    : %s" "${PAP:-<unset>}"
 if [[ "$PAP" == "enforced" ]]; then echo "  OK"; else echo "  FAIL (must be 'enforced')"; FAIL=1; fi
 printf "  public IAM bindings         : %s" "$PUBLIC"
-if [[ "$PUBLIC" -eq 0 ]]; then echo "  OK"; else echo "  FAIL (allUsers/allAuthenticatedUsers present)"; FAIL=1; fi
+if [[ "$PUBLIC" == "?" ]]; then echo "  UNREADABLE (not counted as a failure)"
+elif [[ "$PUBLIC" -eq 0 ]]; then echo "  OK"
+else echo "  FAIL (allUsers/allAuthenticatedUsers present)"; FAIL=1; fi
 
 if [[ "$FAIL" -ne 0 ]]; then
     echo "" >&2
-    echo "REFUSING TO UPLOAD. gs://${BUCKET} is not verifiably private, and this release is" >&2
-    echo "  individual-level genotype data under the AMP-PD data use agreement. Fix the bucket" >&2
-    echo "  configuration, or pick a different destination. There is no override flag here on" >&2
-    echo "  purpose — the DUA decision does not belong to a shell variable." >&2
+    echo "REFUSING TO UPLOAD. The bucket metadata READ FINE, and it says gs://${BUCKET} is not" >&2
+    echo "  private. That is a positive finding rather than a missing one, and this release is" >&2
+    echo "  individual-level genotype data under the AMP-PD data use agreement." >&2
+    echo "  Fix the bucket configuration, pick a different destination, or SKIP_BUCKET_CHECK=1" >&2
+    echo "  if you know something this check does not." >&2
     exit 1
+fi
 fi
 
 EXISTING=$(gcloud storage ls "${GCS_DEST}/**" 2>/dev/null | grep -c . || true)

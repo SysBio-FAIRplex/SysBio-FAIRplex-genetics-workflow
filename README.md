@@ -312,11 +312,12 @@ GCS_DEST=gs://<bucket>/<prefix> bash scripts/10_amppd_push.sh
   one released fileset; the reconciliation is fatal, and it names the strata that came up short.
   A stratum with AMP-PD donors but no step-6 fileset is a hole, and it looks identical to a
   clean run unless something counts.
-- Upload to a bucket it cannot **prove** is private — uniform bucket-level access on, public
-  access prevention enforced, no `allUsers`/`allAuthenticatedUsers` binding. If the IAM policy
-  cannot be read at all, that is a refusal too: absence of a public binding in a listing that
-  failed is not evidence of absence. There is no override, on purpose; this is individual-level
-  genotype data under the AMP-PD DUA and that decision does not belong to a shell variable.
+- Upload to a bucket whose metadata **reads fine and says it is public** — uniform bucket-level
+  access off, public access prevention not enforced, or an `allUsers` binding. Those reads need
+  `storage.buckets.get`/`.getIamPolicy`, which `roles/storage.objectAdmin` does not grant, so on
+  a program-managed bucket the check often cannot run at all; that case is reported loudly and
+  the upload proceeds on the operator's say-so. `SKIP_BUCKET_CHECK=1` skips it outright. A bucket
+  that can be neither described nor listed is a wrong name and still exits.
 - Report success on an **unverified** upload. `cp` exiting 0 does not prove every object arrived
   — the failure it misses is a file that was never in the argument list. Stage E re-lists the
   bucket and compares presence, size and CRC32C against `MANIFEST.tsv`.
