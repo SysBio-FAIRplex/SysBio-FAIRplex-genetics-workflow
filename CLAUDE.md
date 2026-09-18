@@ -76,7 +76,9 @@ directories, passed, and was wrong.
 - **Hand cluster commands to the user; do not ssh.** They run them and paste back.
 - Hosts are FQDNs: `helix.nih.gov` (transfers), `biowulf.nih.gov` (compute). No ssh alias exists.
 - **Code reaches the cluster by `git`, never `rsync`.** The remote
-  (`SysBio-FAIRplex/amp-ad-pd-wgs-gwas`, private) was created 2026-08-21. `rsync` without
+  (`SysBio-FAIRplex/SysBio-FAIRplex-genetics-workflow`, private) was created 2026-08-21 as
+  `amp-ad-pd-wgs-gwas` and renamed since; the old name survives only as a GitHub redirect, so
+  prefer the canonical one. `rsync` without
   `--delete` cannot express a deletion, so retired scripts had to be removed by hand and three
   stale-artifact bugs came of it; git expresses deletions. **Local absence still ≠ cluster
   absence** for anything predating the checkout, and for `results/` and `clinical_core_out/`,

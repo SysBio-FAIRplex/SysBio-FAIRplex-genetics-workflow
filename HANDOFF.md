@@ -336,7 +336,9 @@ files never carried over. Of the 12 scripts shared with this repo, 8 are byte-id
 `config.sh`, `06_ancestry_qc.sh`, `07_gwas.sh` and `05_excludelist.py` differ, with this copy
 authoritative.
 
-**Remote added 2026-08-21: `SysBio-FAIRplex/amp-ad-pd-wgs-gwas` (private).** Before that the entire
+**Remote added 2026-08-21: `SysBio-FAIRplex/SysBio-FAIRplex-genetics-workflow` (private)** — created
+as `amp-ad-pd-wgs-gwas` and renamed since, with the old name surviving only as a GitHub redirect.
+Before that the entire
 history was 12 commits on one laptop disk. The first push was preceded by a history rewrite — a
 notebook had stored a subject-level output table — so no controlled-access data has ever reached the
 remote. `scripts/nb_guard.py` plus a `pre-commit` hook now refuse any notebook carrying stored

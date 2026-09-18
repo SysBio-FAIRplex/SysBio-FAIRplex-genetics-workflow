@@ -210,6 +210,13 @@ that cites a commit is silently invalidated by any rewrite. Relevant to `09_ampp
 stamps `git rev-parse HEAD` into release provenance: **rewrite first, release second.** Step 9 has
 never run, so nothing published cites a SHA that no longer exists.
 
+**The remote has been RENAMED, and every doc still said the old name.** It is
+`SysBio-FAIRplex/SysBio-FAIRplex-genetics-workflow`; it was created 2026-08-21 as
+`amp-ad-pd-wgs-gwas`, and that name now resolves only through a GitHub redirect — which is why
+nothing ever failed and nobody noticed. `CLAUDE.md` and `HANDOFF.md` are corrected. The two earlier
+entries in this file that name `amp-ad-pd-wgs-gwas` are left as written: they were accurate on the
+day, and this file is append-only. If the repo is deleted and recreated, the redirect goes with it.
+
 **Next, in order.**
 
 1. `git remote add origin …` — filter-repo removes it deliberately, so a rewritten history cannot be
