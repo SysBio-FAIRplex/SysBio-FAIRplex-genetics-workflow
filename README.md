@@ -1,4 +1,5 @@
 # WGS Harmonization Pipeline
+[![DOI](https://zenodo.org/badge/1376405115.svg)](https://doi.org/10.5281/zenodo.22882502)
 
 ## Project Overview
 
