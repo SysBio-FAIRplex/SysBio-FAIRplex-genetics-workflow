@@ -1,0 +1,56 @@
+# The repo root sits directly on top of the data tree (4.2 TB on the cluster), so this file
+# is load-bearing: `git add -A` with data/ untracked would try to stage the whole allocation.
+# Git does not descend into an ignored directory, so the top-level data/ rule is enough.
+
+# ── controlled-access data — never in git ────────────────────────────────────
+# AMP-AD (Synapse) and AMP-PD (GCP) both require their own DUA. A collaborator fetches
+# these themselves, on biowulf; the commands are recorded in wgs_core.ipynb §0.
+data/
+
+# ── outputs, all regenerable from code + data ────────────────────────────────
+clinical_core_out/
+logs/
+
+# results/ — everything ignored EXCEPT the eta^2 evidence tables. Those are aggregate (one row
+# per ancestry stratum: n, callset count, eta^2 per PC — no IIDs, no genotypes), so they are
+# safe to version, and they are the measured justification for the AF-concordance filter.
+#
+# The 0.984 / 0.757 unfiltered baseline survived its first overwrite only because someone had
+# typed the numbers into the project log by hand. "Regenerable from code + data" was true in
+# principle and false in practice: regenerating a BASELINE means re-running the step in a state
+# that no longer exists. Version the evidence.
+#
+# The negations are deliberately narrow. results/ also holds retained_samples_manifest.csv,
+# which is one row per SAMPLE and must stay out — an earlier draft of this block un-ignored
+# results/ wholesale and swept it in.
+results/*
+!results/pca/
+results/pca/*
+!results/pca/*_eta2.csv
+!results/pca/af_filter_effect*.csv
+*.log
+slurm-*.out
+
+# ── environment and secrets ──────────────────────────────────────────────────
+.venv/
+.venv_backup*/
+.env
+
+# ── large binaries: liftOver + its chain file (~20 MB), installed per-machine ─
+bin/
+
+# ── prior versions, kept on disk for provenance but not carried in the repo ──
+scripts_archive/
+
+# ── python / jupyter / editor artifacts ──────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.DS_Store
+
+# NOT ignored, deliberately:
+#   ref/          refFlat.txt (21 MB) + highld_exclude_hg38.bed — small, public, and the
+#                 single source of locus coordinates. Versioning it means a fresh checkout on
+#                 the cluster can run gene_annot.py with no setup. The large, non-redistributable reference
+#                 (fasta, ancestry panel) lives in data/ref/ and is ignored with the rest.
